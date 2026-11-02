@@ -1,6 +1,6 @@
 """Opt-in HTTPS release updates. No user workbook data is transmitted."""
 import hashlib,json,os,re,subprocess,sys,tempfile
-import time
+import time,io
 from urllib.error import URLError
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -32,6 +32,16 @@ def fetch(url):
             return build_opener(SafeRedirect()).open(Request(url,headers={'User-Agent':'ProfitTool-Updater','Connection':'close'}),timeout=30)
         except (URLError,TimeoutError,ConnectionError) as e:
             if attempt==2:
+                if os.name=='nt':
+                    folder=Path(tempfile.mkdtemp(prefix='ProfitTool-https-'));target=folder/'response.bin'
+                    try:
+                        result=subprocess.run(['curl.exe','--fail','--silent','--show-error','--location','--proto','=https','--proto-redir','=https','--max-redirs','5','--max-time','90','--max-filesize',str(MAX_BINARY),'--output',str(target),'--write-out','%{url_effective}',url],capture_output=True,timeout=100,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                        if result.returncode:raise RuntimeError('Windows HTTPS 下载失败：'+result.stderr.decode('utf8',errors='replace'))
+                        validate_url(result.stdout.decode('utf8').strip())
+                        if target.stat().st_size>MAX_BINARY:raise ValueError('更新文件过大')
+                        return io.BytesIO(target.read_bytes())
+                    finally:
+                        target.unlink(missing_ok=True);folder.rmdir()
                 raise RuntimeError('无法连接云端更新服务器，当前程序和业务数据未被修改。请稍后重试，或从发布页手动下载。连接原因：'+str(e)) from e
             time.sleep(attempt+1)
 
