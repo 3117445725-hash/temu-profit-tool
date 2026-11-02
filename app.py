@@ -5,12 +5,12 @@ import threading, queue
 from tkinterdnd2 import TkinterDnD, DND_FILES, COPY, REFUSE_DROP
 from core import scan_orders, calculate, export_xlsx, number
 from updater import check_update,download_update,install_update
-VERSION='6.0.3'
+VERSION='6.0.4'
 
 class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title('月度利润计算工具 v6.0.3（普通权限）'); self.geometry('1000x820'); self.minsize(850,760)
+        self.title('月度利润计算工具 v6.0.4（普通权限）'); self.geometry('1000x820'); self.minsize(850,760)
         self.events=queue.Queue(); self.result=None; self.months={}; self.busy=False; self.scanned_path=None
         box=ttk.Frame(self,padding=22); box.pack(fill='both',expand=True)
         ttk.Label(box,text='月度利润计算',font=('Microsoft YaHei UI',22,'bold')).pack(anchor='w')
@@ -48,8 +48,9 @@ class App(TkinterDnD.Tk):
         self.status=tk.StringVar(value='请选择五个文件，然后识别订单月份。'); ttk.Label(box,textvariable=self.status,wraplength=920).pack(anchor='w')
         self.bar=ttk.Progressbar(box,mode='indeterminate'); self.bar.pack(fill='x',pady=8)
         self.log=tk.Text(box,height=10,wrap='word',font=('Microsoft YaHei UI',10));self.log.pack(fill='both',expand=True)
-        self.save=ttk.Button(box,text='导出 Excel 报告',command=self.export,state='disabled');self.save.pack(anchor='e',pady=10)
-        self.clear_button=ttk.Button(box,text='清空记录',command=self.clear_records);self.clear_button.pack(anchor='e')
+        actions=ttk.Frame(box);actions.pack(side='bottom',fill='x',pady=10)
+        self.save=ttk.Button(actions,text='导出 Excel 报告',command=self.export,state='disabled');self.save.pack(side='right')
+        self.clear_button=ttk.Button(actions,text='清空记录',command=self.clear_records);self.clear_button.pack(side='right',padx=12)
         self.freight.trace_add('write',self.freight_changed);self.currency.trace_add('write',self.freight_changed)
         self.refund.trace_add('write',self.freight_changed)
         self.after(100,self.poll)
