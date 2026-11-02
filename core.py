@@ -120,6 +120,11 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
             refs=products.get(sku,set())
             if len(refs)!=1 or not next(iter(refs),''): raise ValueError('商品货号缺失或对应多个货号')
             ref=next(iter(refs)); matches=settlements.get(pair,[])
+            settled=[m for m in matches if (m[2] if m[0]=='ERROR' else m[3])=='已结算']
+            unsettled=[m for m in matches if (m[2] if m[0]=='ERROR' else m[3])=='未结算']
+            if settled and unsettled:
+                matches=settled
+                warnings.append({'阶段':'跨表去重','订单号':order,'SKU ID':sku,'原因':'两表均出现，优先已结算，仅计一次；未结算记录不再计入'})
             if len(matches)>1 and all(m[0]!='ERROR' for m in matches) and len({(m[1],m[2],m[3]) for m in matches})==1:
                 first=matches[0]
                 warnings.append({'阶段':'结算合并','订单号':order,'SKU ID':sku,'原因':'同状态、同币种、同单价的多行结算合并件数；来源行 '+','.join(str(m[4]) for m in matches)})
