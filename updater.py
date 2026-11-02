@@ -94,6 +94,7 @@ $destination = {ps_quote(destination)}
 $backup = $destination + '.previous'
 $staged = $destination + '.updating'
 try {{
+    $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
     $process = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
     if ($process) {{ $process.WaitForExit() }}
     Copy-Item -LiteralPath $source -Destination $staged -Force
