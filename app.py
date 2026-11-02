@@ -5,12 +5,12 @@ import threading, queue
 from tkinterdnd2 import TkinterDnD, DND_FILES, COPY, REFUSE_DROP
 from core import scan_orders, calculate, export_xlsx, number
 from updater import check_update,download_update,install_update
-VERSION='6.0.2'
+VERSION='6.0.3'
 
 class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title('月度利润计算工具 v6.0.2（普通权限）'); self.geometry('1000x820'); self.minsize(850,760)
+        self.title('月度利润计算工具 v6.0.3（普通权限）'); self.geometry('1000x820'); self.minsize(850,760)
         self.events=queue.Queue(); self.result=None; self.months={}; self.busy=False; self.scanned_path=None
         box=ttk.Frame(self,padding=22); box.pack(fill='both',expand=True)
         ttk.Label(box,text='月度利润计算',font=('Microsoft YaHei UI',22,'bold')).pack(anchor='w')
@@ -49,9 +49,14 @@ class App(TkinterDnD.Tk):
         self.bar=ttk.Progressbar(box,mode='indeterminate'); self.bar.pack(fill='x',pady=8)
         self.log=tk.Text(box,height=10,wrap='word',font=('Microsoft YaHei UI',10));self.log.pack(fill='both',expand=True)
         self.save=ttk.Button(box,text='导出 Excel 报告',command=self.export,state='disabled');self.save.pack(anchor='e',pady=10)
+        self.clear_button=ttk.Button(box,text='清空记录',command=self.clear_records);self.clear_button.pack(anchor='e')
         self.freight.trace_add('write',self.freight_changed);self.currency.trace_add('write',self.freight_changed)
         self.refund.trace_add('write',self.freight_changed)
         self.after(100,self.poll)
+    def clear_records(self):
+        if self.busy:return
+        self.result=None;self.log.delete('1.0','end');self.save.config(state='disabled');self.bar.stop();self.bar['value']=0
+        self.status.set('计算结果和异常记录已清空；已选文件及参数保留。')
     def check_cloud(self):
         if not self.busy:self.task(lambda:check_update(VERSION),self.cloud_checked)
     def cloud_checked(self,manifest):
@@ -126,7 +131,7 @@ class App(TkinterDnD.Tk):
         self.result=r;self.save.config(state='normal');self.log.delete('1.0','end')
         self.status.set(f"{r['month']}：选中 {r['selected_orders']} 个唯一订单/SKU，成功 {len(r['details'])} 个，未计入 {r['failed_orders']} 个；异常提示 {len(r['exceptions'])} 条，处理提示 {len(r['warnings'])} 条。")
         for t in r['totals']:self.log.insert('end',f"{t['币种']} 利润：{t['利润']:,.2f} + 运费收入：{t['手填运费收入']:,.2f} = 最终利润：{t['最终利润']:,.2f}\n")
-        for i in r['exceptions'][:30]:self.log.insert('end',f"{i['订单号']} / {i['SKU ID']}：{i['原因']}\n")
+        for i in r['exceptions']:self.log.insert('end',f"[{i['阶段']}] {i['订单号']} / {i['SKU ID']}：{i['原因']}\n\n")
         if not r['details']:self.log.insert('end','没有可计入利润的记录，请检查异常清单。\n')
     def export(self):
         if not self.result:return
