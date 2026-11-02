@@ -35,3 +35,5 @@
 
 
 6.1.0：稳定目录版，完整解压ZIP后运行ProfitTool.exe；不要单独移动EXE，必须保留_internal目录。旧单文件版本请改用桌面已更新的快捷方式，不通过旧更新器迁移。
+
+6.1.1：结算表按表头识别，兼容SettledParentFlow/SettledFlow/UnsettleFlow；明细交易只将销售回款用于件数和申报价计算，运费仍手填。商品信息支持基础信息或产品价格导出表（SKU ID、SKU货号/货号，空时SKC货号）。全部失败时不显示最终利润。
