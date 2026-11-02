@@ -118,7 +118,9 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
         try:
             if not order or not sku: raise ValueError('缺少订单号或SKU ID')
             refs=products.get(sku,set())
-            if len(refs)!=1 or not next(iter(refs),''): raise ValueError('商品货号缺失或对应多个货号')
+            if not refs:raise ValueError('商品表未找到SKU ID '+sku+'；请核对店铺或补充该SKU的商品基础信息')
+            if len(refs)!=1:raise ValueError('SKU ID '+sku+' 对应多个六位货号：'+','.join(sorted(refs))+'；请核实商品表对应关系')
+            if not next(iter(refs),''):raise ValueError('SKU ID '+sku+' 的E列货号（空时取D列）不是以6位数字开头；请修正商品表货号')
             ref=next(iter(refs)); matches=settlements.get(pair,[])
             settled=[m for m in matches if (m[2] if m[0]=='ERROR' else m[3])=='已结算']
             unsettled=[m for m in matches if (m[2] if m[0]=='ERROR' else m[3])=='未结算']
@@ -129,12 +131,17 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
                 first=matches[0]
                 warnings.append({'阶段':'结算合并','订单号':order,'SKU ID':sku,'原因':'同状态、同币种、同单价的多行结算合并件数；来源行 '+','.join(str(m[4]) for m in matches)})
                 matches=[(sum((m[0] for m in matches),Decimal(0)),first[1],first[2],first[3],','.join(str(m[4]) for m in matches))]
-            if len(matches)!=1: raise ValueError('结算匹配数量为 '+str(len(matches))+'，需唯一匹配')
+            if len(matches)!=1:
+                same_order=[s for o,s in settlements if o==order]
+                same_sku=[o for o,s in settlements if s==sku]
+                evidence='；同订单其他SKU：'+(','.join(sorted(set(same_order))) or '无')+'；同SKU其他订单：'+(','.join(sorted(set(same_sku))[:5]) or '无')
+                if matches:evidence+='；匹配记录：'+' | '.join(str(m) for m in matches)
+                raise ValueError('结算匹配数量为 '+str(len(matches))+'，需唯一匹配'+evidence+'；请核对结算店铺、日期范围及订单/SKU组合；不自动改用其他订单')
             match=matches[0]
-            if match[0]=='ERROR': raise ValueError('结算数值错误: '+match[1])
+            if match[0]=='ERROR': raise ValueError('结算数值错误: '+match[1]+'；来源 '+match[2]+' 第'+str(match[3])+'行，请核对件数、申报价格和币种')
             q,p,currency,status,source_row=match
             found=costs.get(ref,[])
-            if len(found)!=1: raise ValueError('成本货号匹配数量为 '+str(len(found)))
+            if len(found)!=1: raise ValueError('成本货号匹配数量为 '+str(len(found))+'；六位货号 '+ref+'；成本来源行：'+(','.join(str(x[0]) for x in found) or '无')+'；请在成本表A列补充或核对唯一对应记录')
             costrow,c=found[0]
             try: fob,first,last,handling,storage_rate,capital_rate=[number(c[i]) for i in [17,18,19,20,27,28]]
             except (ValueError,IndexError) as e: raise ValueError('成本表第%d行缓存数值缺失或无效: %s'%(costrow,e))
