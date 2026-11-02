@@ -82,16 +82,37 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
     issues=[]; details=[]; warnings=[]
     def issue(stage,order='',sku='',reason=''): issues.append({'阶段':stage,'订单号':order,'SKU ID':sku,'原因':reason})
     products=defaultdict(set)
-    for r in list(rows(product_path))[1:]:
-        if len(r)>=5 and key(r[2]): products[key(r[2])].add(sku_key(key(r[4]) or key(r[3])))
+    product_it=iter(rows(product_path));header=[key(v) for v in next(product_it)]
+    if 'SKU ID' not in header:raise ValueError('商品表缺少SKU ID表头；请选择商品基础信息或产品价格导出表')
+    product_id=header.index('SKU ID')
+    primary=next((header.index(name) for name in ['SKU货号','货号'] if name in header),None)
+    fallback=header.index('SKC货号') if 'SKC货号' in header else None
+    if primary is None and fallback is None:raise ValueError('商品表缺少SKU货号、货号或SKC货号表头')
+    for r in product_it:
+        if len(r)>product_id and key(r[product_id]):
+            ref=key(r[primary]) if primary is not None and len(r)>primary else ''
+            if not ref and fallback is not None and len(r)>fallback:ref=key(r[fallback])
+            products[key(r[product_id])].add(sku_key(ref))
     settlements=defaultdict(list)
     for path,label,qi,pi,ci in [(unsettled_path,'未结算',3,4,5),(settled_path,'已结算',4,5,7)]:
         current=''
+        oi,si=0,1;trade_index=None;heads=[]
         for n,r in enumerate(settlement_rows(path),1):
-            if n<=2: continue
+            if n<=2:
+                heads.append(r)
+                if n==2:
+                    columns={key(v):i for head in heads for i,v in enumerate(head) if key(v)}
+                    if 'SKU ID' in columns:
+                        required=['PO单号','SKU ID','件数','申报价格','币种']
+                        missing=[x for x in required if x not in columns]
+                        if missing:raise ValueError(label+'表缺少字段：'+','.join(missing))
+                        oi,si,qi,pi,ci=[columns[x] for x in required]
+                        trade_index=columns.get('交易类型')
+                continue
             if not any(x is not None for x in r): continue
-            if key(r[0]): current=key(r[0])
-            sku=key(r[1]) if len(r)>1 else ''
+            if key(r[oi]): current=key(r[oi])
+            if trade_index is not None and key(r[trade_index])!='销售回款':continue
+            sku=key(r[si]) if len(r)>si else ''
             if not sku: continue
             try:
                 q,p=number(r[qi]),number(r[pi]); currency=key(r[ci]) if len(r)>ci else ''
@@ -158,7 +179,7 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
     totals={}
     for s in summary.values(): totals[s['币种']]=totals.get(s['币种'],Decimal(0))+s['利润']
     totals.setdefault(freight_currency,Decimal(0))
-    final=[{'币种':c,'利润':v,'手填运费收入':freight_income if c==freight_currency else Decimal(0),'最终利润':v+(freight_income if c==freight_currency else Decimal(0))} for c,v in totals.items()]
+    final=[{'币种':c,'利润':v,'手填运费收入':freight_income if c==freight_currency else Decimal(0),'最终利润':v+(freight_income if c==freight_currency else Decimal(0))} for c,v in totals.items()] if details else []
     return {'details':details,'summary':list(summary.values()),'totals':final,'refund_percent':refund_percent,'exceptions':issues,'warnings':warnings,'failed_orders':len(seen)-len(details),'selected_orders':len(seen),'month':selected_month,'date_field':date_field}
 
 def export_xlsx(result,path):
