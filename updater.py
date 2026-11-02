@@ -1,5 +1,7 @@
 """Opt-in HTTPS release updates. No user workbook data is transmitted."""
 import hashlib,json,os,re,subprocess,sys,tempfile
+import time
+from urllib.error import URLError
 from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler,Request,build_opener
@@ -24,7 +26,14 @@ class SafeRedirect(HTTPRedirectHandler):
         return super().redirect_request(req,fp,code,msg,headers,newurl)
 
 def fetch(url):
-    return build_opener(SafeRedirect()).open(Request(validate_url(url),headers={'User-Agent':'ProfitTool-Updater'}),timeout=30)
+    validate_url(url)
+    for attempt in range(3):
+        try:
+            return build_opener(SafeRedirect()).open(Request(url,headers={'User-Agent':'ProfitTool-Updater','Connection':'close'}),timeout=30)
+        except (URLError,TimeoutError,ConnectionError) as e:
+            if attempt==2:
+                raise RuntimeError('无法连接云端更新服务器，当前程序和业务数据未被修改。请稍后重试，或从发布页手动下载。连接原因：'+str(e)) from e
+            time.sleep(attempt+1)
 
 def validate_manifest(m):
     if not isinstance(m,dict): raise ValueError('更新清单格式错误')
