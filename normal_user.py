@@ -30,7 +30,9 @@ def launch_normal(argv):
             if not a.DuplicateTokenEx(token,0xF01FF,None,2,1,ctypes.byref(dup)):raise ctypes.WinError(ctypes.get_last_error())
             si=STARTUPINFO();si.cb=ctypes.sizeof(si);si.lpDesktop='winsta0\\default';pi=PROCESSINFO()
             cmd=ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
-            if not a.CreateProcessWithTokenW(dup,0,None,cmd,0,None,os.getcwd(),ctypes.byref(si),ctypes.byref(pi)):raise ctypes.WinError(ctypes.get_last_error())
+            env=dict(os.environ);env['PYINSTALLER_RESET_ENVIRONMENT']='1'
+            env_block=ctypes.create_unicode_buffer('\0'.join(k+'='+v for k,v in sorted(env.items(),key=lambda x:x[0].upper()))+'\0\0')
+            if not a.CreateProcessWithTokenW(dup,0,None,cmd,0x400,env_block,os.getcwd(),ctypes.byref(si),ctypes.byref(pi)):raise ctypes.WinError(ctypes.get_last_error())
             k.CloseHandle(pi.hThread);k.CloseHandle(pi.hProcess);return pi.dwProcessId
         finally:
             if dup:k.CloseHandle(dup)
