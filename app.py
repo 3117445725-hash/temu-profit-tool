@@ -5,12 +5,12 @@ import threading, queue
 from tkinterdnd2 import TkinterDnD, DND_FILES, COPY, REFUSE_DROP
 from core import scan_orders, calculate, export_xlsx, number
 from updater import check_update,download_update,install_update
-VERSION='6.1.0'
+VERSION='6.1.1'
 
 class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title('月度利润计算工具 v6.1.0（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
+        self.title('月度利润计算工具 v6.1.1（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
         self.events=queue.Queue(); self.result=None; self.months={}; self.busy=False; self.scanned_path=None
         box=ttk.Frame(self,padding=22); box.pack(fill='both',expand=True)
         ttk.Label(box,text='月度利润计算',font=('Microsoft YaHei UI',22,'bold')).pack(anchor='w')
