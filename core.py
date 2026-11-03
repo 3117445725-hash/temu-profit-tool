@@ -80,7 +80,7 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
     freight_currency=key(freight_currency).upper()
     if not freight_currency: raise ValueError('请选择运费收入币种')
     issues=[]; details=[]; warnings=[]; estimated=[]
-    def issue(stage,order='',sku='',reason=''): issues.append({'阶段':stage,'订单号':order,'SKU ID':sku,'原因':reason})
+    def issue(stage,order='',sku='',reason='',order_qty=None): issues.append({'阶段':stage,'订单号':order,'SKU ID':sku,'原因':reason,'订单应履约件数':order_qty})
     products=defaultdict(set)
     product_it=iter(rows(product_path));header=[key(v) for v in next(product_it)]
     if 'SKU ID' not in header:raise ValueError('商品表缺少SKU ID表头；请选择商品基础信息或产品价格导出表')
@@ -137,6 +137,11 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
             warnings.append({'阶段':'订单去重','订单号':order,'SKU ID':sku,'原因':'重复订单号+SKU ID，仅计算一次；件数取结算表'})
             continue
         seen.add(pair)
+        try:
+            order_qty=number(r.get('应履约件数'))
+            if order_qty<=0 or order_qty!=order_qty.to_integral_value():order_qty=None
+        except ValueError:order_qty=None
+        quantity_source='结算表'
         q=p=currency=status=source_row=None
         try:
             if not order or not sku: raise ValueError('缺少订单号或SKU ID')
@@ -159,6 +164,9 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
             match=matches[0]
             if match[0]=='ERROR': raise ValueError('结算数值错误: '+match[1]+'；来源 '+match[2]+' 第'+str(match[3])+'行，请核对件数、申报价格和币种')
             q,p,currency,status,source_row=match
+            if q is None and order_qty is not None:
+                q=order_qty;quantity_source='订单表应履约件数'
+                warnings.append({'阶段':'件数补充','订单号':order,'SKU ID':sku,'原因':'结算件数空白，采用订单表应履约件数 '+str(q)})
             if q is None:raise ValueError('结算表缺少件数；按申报价格10%估算，未乘件数')
             refs=products.get(sku,set())
             if not refs:raise ValueError('商品表未找到SKU ID '+sku+'；请核对店铺或补充该SKU的商品基础信息')
@@ -172,13 +180,13 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
             except (ValueError,IndexError) as e: raise ValueError('成本表第%d行缓存数值缺失或无效: %s'%(costrow,e))
             values=[fob,first,last,handling,p*storage_rate,p*refund_rate,p*capital_rate]
             total=sum(values,Decimal(0));profit=(p-total)*q
-            d={'订单号':order,'SKU ID':sku,'SKU货号':ref,'月份':selected_month,'结算状态':status,'币种':currency,'件数':q,'申报价格':p}
+            d={'订单号':order,'SKU ID':sku,'SKU货号':ref,'月份':selected_month,'结算状态':status,'币种':currency,'件数':q,'申报价格':p,'件数来源':quantity_source}
             d.update(zip(FIELDS,values));d.update({'资金成本率':capital_rate,'美仓仓储费率':storage_rate,'单件总成本':total,'利润':profit,'成本源行':costrow,'结算源行':source_row})
             details.append(d)
         except ValueError as e:
             if p is not None:
-                estimated.append({'订单号':order,'SKU ID':sku,'月份':selected_month,'结算状态':status,'币种':currency,'件数':q,'申报价格':p,'估算比例':Decimal('0.10'),'估算利润':p*Decimal('0.10')*(q if q is not None else Decimal(1)),'估算依据':'申报价格×10%×件数' if q is not None else '申报价格×10%（缺件数）','估算原因':str(e),'结算源行':source_row})
-            else:issue('匹配/计算',order,sku,str(e))
+                estimated.append({'订单号':order,'SKU ID':sku,'月份':selected_month,'结算状态':status,'币种':currency,'件数':q,'申报价格':p,'件数来源':quantity_source if q is not None else '无件数','估算比例':Decimal('0.10'),'估算利润':p*Decimal('0.10')*(q if q is not None else Decimal(1)),'估算依据':'申报价格×10%×件数' if q is not None else '申报价格×10%（缺件数）','估算原因':str(e),'结算源行':source_row})
+            else:issue('匹配/计算',order,sku,str(e)+('；已读取订单应履约件数 '+str(order_qty)+'，但缺少可靠申报价格，仍不计入利润' if order_qty is not None else ''),order_qty)
     summary={}
     for d in details:
         k=(d['SKU货号'],d['币种']);s=summary.setdefault(k,{'SKU货号':k[0],'币种':k[1],'件数':Decimal(0),'申报总额':Decimal(0),'总成本':Decimal(0),'利润':Decimal(0)})
@@ -215,3 +223,4 @@ def export_xlsx(result,path):
     s.append(['预计退款比例',str(result.get('refund_percent',10))+'%（手填）；预计退款成本=申报价格×此比例，不读取成本表Y列。'])
     s.append(['货号匹配','商品货号与成本表货号均取开头6位数字，保留前导零；截取后多个成本记录仍提示异常。'])
     w.save(path)
+
