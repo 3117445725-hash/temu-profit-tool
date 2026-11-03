@@ -4,22 +4,23 @@ from pathlib import Path
 import threading, queue
 from tkinterdnd2 import TkinterDnD, DND_FILES, COPY, REFUSE_DROP
 from core import scan_orders, calculate, export_xlsx, number
+from auto_import import scan_auto,calculate_auto
 from updater import check_update,download_update,install_update
 import state_store
-VERSION='6.2.3'
+VERSION='6.3.0'
 
 class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title('月度利润计算工具 v6.2.3（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
+        self.title('月度利润计算工具 v6.3.0（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
         self._restoring=True;self._state_timer=None
         self.events=queue.Queue(); self.result=None; self.months={}; self.busy=False; self.scanned_path=None
         box=ttk.Frame(self,padding=22); box.pack(fill='both',expand=True)
         ttk.Label(box,text='月度利润计算',font=('Microsoft YaHei UI',22,'bold')).pack(anchor='w')
-        ttk.Label(box,text='导入五张表 · 选择月份 · 导出利润明细与异常清单').pack(anchor='w',pady=(4,18))
+        ttk.Label(box,text='按字段自动识别上传表 · 商品表可选 · 自动核对件数').pack(anchor='w',pady=(4,18))
         self.update_button=ttk.Button(box,text='检查云端更新 · 当前 '+VERSION,command=self.check_cloud);self.update_button.pack(anchor='e')
-        self.paths=[];self.drop_widgets=[]
-        for title in ['订单表（CSV / Excel）','商品基础信息表','未结算数据表','已结算数据表','成本表']:
+        self.paths=[];self.drop_widgets=[];self.extra_files=[]
+        for title in ['文件1（通常为订单）','文件2（商品表可选）','文件3（结算或其他）','文件4（结算或其他）','文件5（成本或其他）']:
             row=ttk.Frame(box); row.pack(fill='x',pady=5)
             label=ttk.Label(row,text=title,width=23);label.pack(side='left')
             v=tk.StringVar(); self.paths.append(v)
@@ -31,7 +32,11 @@ class App(TkinterDnD.Tk):
                 target.dnd_bind('<<DropPosition>>',lambda event:COPY if not self.busy else REFUSE_DROP)
                 target.dnd_bind('<<Drop>>',lambda event,v=v:self.drop_file(event,v))
                 self.drop_widgets.append((target,v))
-        row=ttk.Frame(box); row.pack(fill='x',pady=16)
+        upload=ttk.Frame(box);upload.pack(fill='x',pady=5)
+        ttk.Button(upload,text='批量添加表格（自动识别）',command=self.add_files).pack(side='left')
+        ttk.Button(upload,text='移除附加文件',command=self.clear_extra).pack(side='left',padx=8)
+        self.extra_label=ttk.Label(upload,text='附加文件：0');self.extra_label.pack(side='left')
+        row=ttk.Frame(box); row.pack(fill='x',pady=10)
         ttk.Button(row,text='识别订单月份',command=self.scan).pack(side='left')
         ttk.Label(row,text='  日期依据 ').pack(side='left')
         self.date=tk.StringVar(value='订单创建时间'); self.dc=ttk.Combobox(row,textvariable=self.date,state='readonly',width=19); self.dc.pack(side='left'); self.dc.bind('<<ComboboxSelected>>',self.refresh_month)
@@ -69,6 +74,7 @@ class App(TkinterDnD.Tk):
             for v,value in zip(self.paths,data.get('paths',[])):v.set(value)
             for name in ['date','mon','freight','currency','refund']:
                 if name in data:getattr(self,name).set(data[name])
+            self.extra_files=data.get('extra_files',[]);self.extra_label.config(text='附加文件：'+str(len(self.extra_files)))
             self.months=data.get('months',{});self.scanned_path=data.get('scanned_path')
             self.dc['values']=list(self.months);self.mc['values']=self.months.get(self.date.get(),[])
             self.result=data.get('result');self.log.insert('1.0',data.get('log',''))
@@ -78,7 +84,7 @@ class App(TkinterDnD.Tk):
     def save_state(self):
         self._state_timer=None
         try:
-            state_store.save({'paths':[v.get() for v in self.paths],**{n:getattr(self,n).get() for n in ['date','mon','freight','currency','refund']},'months':self.months,'scanned_path':self.scanned_path,'result':self.result,'log':self.log.get('1.0','end-1c'),'status':self.status.get()})
+            state_store.save({'paths':[v.get() for v in self.paths],'extra_files':self.extra_files,**{n:getattr(self,n).get() for n in ['date','mon','freight','currency','refund']},'months':self.months,'scanned_path':self.scanned_path,'result':self.result,'log':self.log.get('1.0','end-1c'),'status':self.status.get()})
             return True
         except Exception as e:
             messagebox.showerror('保存记录失败',str(e));return False
@@ -90,7 +96,7 @@ class App(TkinterDnD.Tk):
         if self._restoring:return
         self.freight_changed();self.schedule_state()
     def input_signature(self):
-        return tuple(v.get() for v in self.paths+[self.date,self.mon,self.freight,self.currency,self.refund])
+        return tuple(v.get() for v in self.paths+[self.date,self.mon,self.freight,self.currency,self.refund])+tuple(self.extra_files)
     def log_changed(self,*_):
         if self.log.edit_modified():self.log.edit_modified(False);self.schedule_state()
     def close_app(self):
@@ -124,15 +130,33 @@ class App(TkinterDnD.Tk):
     def set_path(self,v,p):
         if self.busy:return
         v.set(p);self.result=None;self.save.config(state='disabled')
-        if v is self.paths[0]:self.months={};self.mon.set('');self.mc['values']=[];self.scanned_path=None
+        self.scanned_path=None
+    def collected_files(self):
+        return list(dict.fromkeys([v.get() for v in self.paths if v.get()]+self.extra_files))
+    def add_files(self):
+        if self.busy:return
+        self.add_selected(filedialog.askopenfilenames(filetypes=[('数据文件','*.xlsx *.csv')]))
+    def add_selected(self,files):
+        if self.busy:return
+        for path in files:
+            if path in self.collected_files():continue
+            slot=next((v for v in self.paths if not v.get()),None)
+            if slot is not None:slot.set(path)
+            else:self.extra_files.append(path)
+        self.scanned_path=None;self.extra_label.config(text='附加文件：'+str(len(self.extra_files)))
+        self.input_changed();self.status.set('已添加 '+str(len(self.collected_files()))+' 个文件，请自动识别月份。')
+    def clear_extra(self):
+        if self.busy:return
+        self.extra_files=[];self.extra_label.config(text='附加文件：0');self.scanned_path=None;self.input_changed()
     def drop_file(self,event,v):
         if self.busy:return REFUSE_DROP
         files=self.tk.splitlist(event.data)
-        if len(files)!=1:return messagebox.showinfo('拖拽文件','每个输入框请放入一个对应文件。')
-        p=Path(files[0])
-        allowed={'.xlsx','.csv'} if v is self.paths[0] else {'.xlsx'}
-        if not p.is_file() or p.suffix.lower() not in allowed:return messagebox.showerror('文件无效','订单支持 CSV/XLSX，其余表请使用 XLSX。')
-        self.set_path(v,str(p));self.status.set('已拖入：'+p.name);return COPY
+        if not files:return REFUSE_DROP
+        if any(not Path(p).is_file() or Path(p).suffix.lower() not in {'.csv','.xlsx'} for p in files):
+            messagebox.showerror('文件无效','请拖入 CSV 或 XLSX 文件。');return REFUSE_DROP
+        if len(files)>1:self.add_selected(files)
+        else:self.set_path(v,str(Path(files[0])));self.status.set('已拖入：'+Path(files[0]).name)
+        return COPY
     def task(self,fn,done):
         if self.busy:return
         self.busy=True
@@ -150,21 +174,22 @@ class App(TkinterDnD.Tk):
         self.after(100,self.poll)
     def scan(self):
         if self.busy:return
-        if not Path(self.paths[0].get()).is_file():return messagebox.showinfo('选择订单表','请先选择订单表。')
-        path=self.paths[0].get();self.scanned_path=path
-        self.task(lambda:scan_orders(path),self.scanned)
+        paths=self.collected_files()
+        if not paths or any(not Path(p).is_file() for p in paths):return messagebox.showinfo('选择文件','请先选择有效数据文件。')
+        self.scanned_path=paths
+        self.task(lambda:scan_auto(paths),self.scanned)
     def scanned(self,data):
         fields,self.months=data;self.dc['values']=fields
         self.date.set('订单创建时间' if '订单创建时间' in fields else fields[0] if fields else '')
-        self.refresh_month();self.status.set('月份已识别，可选择月份并计算。')
+        self.refresh_month();self.status.set('上传表字段与月份已识别，可选择月份并计算。')
     def refresh_month(self,*_):
         values=self.months.get(self.date.get(),[]);self.mc['values']=values;self.mon.set(values[-1] if values else '')
     def compute(self):
         if self.busy:return
-        paths=[v.get() for v in self.paths]
-        if not all(Path(p).is_file() for p in paths):return messagebox.showinfo('缺少文件','请选择全部五个有效文件。')
+        paths=self.collected_files()
+        if not paths or not all(Path(p).is_file() for p in paths):return messagebox.showinfo('缺少文件','请选择有效文件；无需固定上传五张表。')
         if not self.mon.get():return messagebox.showinfo('选择月份','请先识别并选择订单月份。')
-        if paths[0]!=self.scanned_path:return messagebox.showinfo('订单文件已更换','请重新识别订单月份。')
+        if paths!=self.scanned_path:return messagebox.showinfo('订单文件已更换','请重新识别订单月份。')
         try:
             freight=number(self.freight.get());currency=self.currency.get().strip().upper()
             if freight<0 or not currency:raise ValueError('运费收入须为非负金额，并填写币种')
@@ -173,12 +198,16 @@ class App(TkinterDnD.Tk):
         except ValueError as e:return messagebox.showerror('输入无效',str(e))
         month,date=self.mon.get(),self.date.get();self.result=None
         self._calculation_inputs=self.input_signature()
-        self.task(lambda:calculate(*paths,month,date,freight,currency,refund),self.calculated)
+        self.task(lambda:calculate_auto(paths,month,date,freight,currency,refund),self.calculated)
     def calculated(self,r):
         if self.input_signature()!=self._calculation_inputs:
             self.result=None;self.save.config(state='disabled');self.status.set('计算期间输入已修改，请重新计算。');self.schedule_state();return
         self.result=r;self.save.config(state='normal');self.log.delete('1.0','end')
         self.status.set(f"{r['month']}：选中 {r['selected_orders']} 个唯一订单/SKU，正常 {len(r['details'])} 个，估算 {r['estimated_orders']} 个，未计入 {r['failed_orders']} 个；异常提示 {len(r['exceptions'])} 条，处理提示 {len(r['warnings'])} 条。")
+        from collections import Counter
+        comparisons=Counter(x['对比结果'] for x in r.get('quantity_checks',[]))
+        self.log.insert('end','件数对比：'+str(dict(comparisons))+'\n')
+        for item in r.get('import_report',[]):self.log.insert('end','[自动识别] '+str(item)+'\n')
         for t in r['totals']:self.log.insert('end',f"{t['币种']} 正常：{t['正常计算利润']:,.2f} + 估算：{t['估算利润']:,.2f} = 利润：{t['利润']:,.2f} + 运费收入：{t['手填运费收入']:,.2f} = 最终利润：{t['最终利润']:,.2f}\n")
         for d in r['estimated']:self.log.insert('end',f"[估算10%] {d['订单号']} / {d['SKU ID']}：{d['估算原因']}；估算利润 {d['估算利润']:,.2f}\n\n")
         for i in r['exceptions']:self.log.insert('end',f"[{i['阶段']}] {i['订单号']} / {i['SKU ID']}：{i['原因']}\n\n")
