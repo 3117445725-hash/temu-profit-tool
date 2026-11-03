@@ -51,8 +51,13 @@ async function platformPage(s,page){
 async function drive(s){
   const j=s.job;if(!j?.active||j.stage!=='list')return;
   if(j.index>=j.pending.length){
+    if(j.platform&&j.snapshotComplete){
+      const counted=new Set(j.processed).size;
+      j.active=false;j.stage='done';j.message=counted===j.expectedTotal?'整月订单读取结束，已核对 '+counted+' / '+j.expectedTotal+' 单；成功 '+(j.successfulOrders||0)+' 单，取消 '+(j.excludedCancelled||0)+' 单，读取异常 '+(j.failedOrders||0)+' 单':'数量核对不符：已处理 '+counted+' / '+j.expectedTotal+' 单，未认定完成';
+      await save(s);return;
+    }
     if(j.platform){
-      j.stage='page';j.started=Date.now();await save(s);const next=await send(j.listTab,{type:'NEXT_PAGE'});
+      j.stage='page';j.started=Date.now();await save(s);const next=await send(j.listTab,{type:'NEXT_PAGE',targetPage:(j.pageCount||1)+1});
       if(!next.ok){
         if(next.finished===true){j.active=false;j.message='所选月份后台采集完成';const ownList=j.listTab;j.listTab=null;await save(s);if(ownList&&ownList!==j.base)try{await chrome.tabs.remove(ownList);}catch{}}
         else await pausePlatform(s,next.error||'后台未找到明确可用的下一页按钮，已暂停；未认定全部完成');
@@ -94,6 +99,15 @@ async function handle(msg,sender){
     // This exact detail route and its order parameter were verified on the live US seller site.
     // No synthetic window.open is needed; each worker replaces the order with a real list order.
     if(!template&&host==='agentseller-us.temu.com')template='https://agentseller-us.temu.com/mmsos/order-detail.html?timezone=UTC%2B8&parent_order_sn=PO-211-0&fulfillment_mode=0';
+    const visiblePage=await send(tab.id,{type:'LIST'});
+    const observedURL=new URL(visiblePage.url||tab.url);
+    const sameMonth=observedURL.searchParams.get('parentOrderTime_startTs')===String(start)&&observedURL.searchParams.get('parentOrderTime_endTs')===String(end);
+    if(template&&sameMonth&&visiblePage.complete===true&&Number.isSafeInteger(visiblePage.total)&&visiblePage.total>=0&&visiblePage.total===new Set((visiblePage.items||[]).map(r=>r.order)).size){
+      s.job={active:true,platform:true,quiet:true,snapshotComplete:true,expectedTotal:visiblePage.total,base:tab.id,listTab:null,listURL:listAddress.href,detail:null,worker:null,template,month:msg.month,pending:[],index:0,processed:[],stage:'ready',signature:null,pageCount:0,message:'当前列表已覆盖整月，直接后台读取全部订单详情',started:Date.now()};
+      await save(s);
+      if(visiblePage.total===0){s.job.active=false;s.job.message='所选月份无订单';await save(s);return {ok:true};}
+      await platformPage(s,visiblePage);return {ok:true};
+    }
     const list=await chrome.tabs.create({url:listAddress.href,active:false});
     if(!template){
       const owned=new Set([list.id]);
@@ -150,6 +164,13 @@ async function handle(msg,sender){
   if(msg.type==='RESUME'){
     if(!j)throw Error('尚无待续采任务');
     const tab=await chrome.tabs.get(msg.tabId);if(!allowed(tab.url))throw Error('请在对应店铺的订单列表或详情页继续');
+    if(j.platform&&j.snapshotComplete){
+      if(new URL(tab.url).hostname!==new URL(j.template).hostname)throw Error('请在原店铺页面继续');
+      j.active=true;j.base=tab.id;j.stage='list';j.started=Date.now();j.message='继续完整订单队列';
+      const oldWorker=j.worker;j.worker=null;j.detail=null;await save(s);
+      if(oldWorker&&oldWorker!==j.base)try{await chrome.tabs.remove(oldWorker);}catch{}
+      await drive(s);return {ok:true};
+    }
     if(j.platform){
       if(new URL(tab.url).hostname!==new URL(j.template).hostname)throw Error('当前店铺域名与后台任务不一致');
       j.active=true;j.base=tab.id;j.started=Date.now();j.message='继续平台后台采集';
@@ -204,12 +225,14 @@ async function handle(msg,sender){
       const cancelled=/^(?:已取消|cancelled|canceled)$/i.test(String(msg.result.status||'').trim());
       const result={...msg.result,records:(msg.result.records||[]).filter(r=>r.order===j.order&&(j.platform||allowedIds.includes(r.sku)))};
       if(j.platform&&!result.created)result.created=result.records[0]?.orderCreated||'';
-      if(cancelled)addError(s,j.order,'详情状态为已取消，跳过采集');else{
+      if(cancelled){j.excludedCancelled=(j.excludedCancelled||0)+1;}else{
         const actualMonth=createdMonth(result.created||result.records[0]?.orderCreated);
         if(j.platform&&(!actualMonth||actualMonth!==j.month)){
           addError(s,j.order,!actualMonth?'详情缺少可靠创建时间，未计入所选月份':'详情创建月份不符，跳过');result.records=[];
         }
         for(const sku of allowedIds)if(!result.records.some(r=>r.sku===sku))addError(s,j.order,'导入SKU '+sku+' 未在详情中读取到明确申报价格');
+        if(result.records.length)j.successfulOrders=(j.successfulOrders||0)+1;
+        else{j.failedOrders=(j.failedOrders||0)+1;addError(s,j.order,'详情未取得可保存的本月价格：'+(result.errors||[]).join('；'));}
         remember(s,result,j.month);
       }
       j.processed.push(j.order);j.index++;j.stage='list';const worker=j.worker;j.worker=null;j.detail=null;await save(s);
