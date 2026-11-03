@@ -103,10 +103,11 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
                 if n==2:
                     columns={key(v):i for head in heads for i,v in enumerate(head) if key(v)}
                     if 'SKU ID' in columns:
-                        required=['PO单号','SKU ID','件数','申报价格','币种']
+                        required=['PO单号','SKU ID','件数','申报价格']
                         missing=[x for x in required if x not in columns]
                         if missing:raise ValueError(label+'表缺少字段：'+','.join(missing))
-                        oi,si,qi,pi,ci=[columns[x] for x in required]
+                        oi,si,qi,pi=[columns[x] for x in required]
+                        ci=columns.get('币种')
                         trade_index=columns.get('交易类型')
                 continue
             if not any(x is not None for x in r): continue
@@ -116,9 +117,12 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
             if not sku: continue
             try:
                 q=number(r[qi]) if len(r)>qi and key(r[qi]) else None
-                p=number(r[pi]); currency=key(r[ci]) if len(r)>ci else ''
+                p=number(r[pi]); currency=key(r[ci]) if ci is not None and len(r)>ci else ''
+                if not currency:
+                    currency=freight_currency
+                    warnings.append({'阶段':'统一币种','订单号':current,'SKU ID':sku,'原因':label+'第'+str(n)+'行未填币种，按工具统一单位 '+currency+' 处理，未进行换汇'})
                 if (q is not None and (q<=0 or q!=q.to_integral_value())) or p<0: raise ValueError('件数必须为正整数、申报价格不能为负')
-                if not current or not currency: raise ValueError('缺少订单号或币种')
+                if not current: raise ValueError('缺少订单号')
                 settlements[(current,sku)].append((q,p,currency,label,n))
             except (ValueError,IndexError) as e: settlements[(current,sku)].append(('ERROR',str(e),label,n))
     costs=defaultdict(list)
