@@ -10,7 +10,7 @@ async function refresh(){
   const bridge=await ask('BRIDGE_STATUS');
   $('bridge').textContent=bridge.connected?'本机桥接：已连接':bridge.configured?'本机桥接：未连接 '+(bridge.lastError||''):'本机桥接：尚未配对';
   const s=await ask('STATUS');const j=s.job;
-  $('status').textContent=(lastActionError?'操作失败：'+lastActionError+'\n\n':'')+'已保存 '+s.count+' 条订单/SKU价格\n'+(j?`${j.active?'采集中':'暂停/完成'}：${j.message}\n本任务已处理 ${j.processed?.length||0} 个订单 / ${j.pageCount||0} 页\n列表排除取消 ${j.excludedCancelled||0} 单，其他月份 ${j.excludedOtherMonth||0} 单\n${j.order||''}`:'尚无批量任务')+'\n'+s.errors.map(e=>(e.order||'')+' '+e.reason).join('\n');
+  $('status').textContent=(lastActionError?'操作失败：'+lastActionError+'\n\n':'')+'已保存 '+s.count+' 条订单/SKU价格\n'+(j?`${j.active?'采集中':j.stage==='done'?'读取结束':'已暂停或任务结束'}：${j.message}\n本任务已处理 ${j.processed?.length||0} 个订单 / ${j.pageCount||0} 页\n排除取消 ${j.excludedCancelled||0} 单，其他月份 ${j.excludedOtherMonth||0} 单\n详情成功 ${j.successfulOrders||0} 单，读取异常 ${j.failedOrders||0} 单\n${j.order||''}`:'尚无批量任务')+'\n'+s.errors.map(e=>(e.order||'')+' '+e.reason).join('\n');
 }
 $('connect').onclick=async()=>{await ask('BRIDGE_TOGGLE',{enabled:true});await refresh();};
 $('disconnect').onclick=async()=>{await ask('BRIDGE_TOGGLE',{enabled:false});await refresh();};
