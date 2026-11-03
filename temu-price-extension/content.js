@@ -37,18 +37,29 @@
   async function prepareList(){
     if(location.pathname!=='/mmsos/orders.html')throw Error('当前不是已识别的订单列表页');
     const buttons=()=>[...document.querySelectorAll('button,[role="button"]')].filter(visible);
-    const reset=buttons().filter(el=>el.innerText.trim()==='重置');
-    if(reset.length!==1)throw Error('无法唯一识别订单筛选重置按钮，已暂停');
-    reset[0].click();await new Promise(resolve=>setTimeout(resolve,350));
     const candidates=[...document.querySelectorAll('a,span,div,button')].filter(el=>visible(el)&&/^全部\s*[（(]\s*\d+\s*[）)]$/.test(el.innerText?.trim()||''));
     const specific=candidates.filter(el=>!candidates.some(other=>other!==el&&el.contains(other)));
     if(specific.length!==1)throw Error('无法唯一识别“全部”订单标签，已暂停');
-    specific[0].click();await new Promise(resolve=>setTimeout(resolve,350));
-    const query=buttons().filter(el=>el.innerText.trim()==='查询');
-    if(query.length!==1)throw Error('无法唯一识别订单查询按钮，已暂停');
-    query[0].click();await new Promise(resolve=>setTimeout(resolve,800));
-    return {ok:true,mode:'扫描全部状态，在详情中核对目标月份并排除已取消'};
+    if(new URL(location.href).searchParams.get('queryType')!=='0'){specific[0].click();await new Promise(resolve=>setTimeout(resolve,800));}
+    // Use only the page-size selector associated with the visible “每页” label.
+    const pageControls=[...document.querySelectorAll('select,[role="combobox"],input')].filter(el=>{
+      if(!visible(el))return false;
+      let parent=el;for(let n=0;parent&&n<4;n++,parent=parent.parentElement){const t=parent.innerText||'';if(t.length<160&&/每页/.test(t)&&/条/.test(t))return true;}return false;
+    });
+    if(pageControls.length===1){
+      const control=pageControls[0];
+      if(control.tagName==='SELECT'&&[...control.options].some(o=>o.value==='500')){control.value='500';control.dispatchEvent(new Event('change',{bubbles:true}));}
+      else if(String(control.value||control.textContent||'').trim()!=='500'){
+        control.click();await new Promise(resolve=>setTimeout(resolve,200));
+        const options=[...document.querySelectorAll('[role="option"],[class*="select-option"],[class*="SelectOption"]')].filter(el=>visible(el)&&el.textContent.trim()==='500');
+        if(options.length===1)options[0].click();
+      }
+      await new Promise(resolve=>setTimeout(resolve,800));
+    }
+    // Never reset/query here: reset removed the requested month and page size.
+    return {ok:true,mode:'保留目标月份及每页条数，扫描全部状态并排除已取消'};
   }
+
   function capture(){
     const parsed=PriceParser.parseDocument(document);
     const created=text().match(/订单创建时间\s*[:：]?\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)/);
@@ -59,10 +70,23 @@
     const candidates=[...document.querySelectorAll('button,a,li,[role="button"]')].filter(el=>{
       if(!visible(el))return false;
       const label=(el.getAttribute('aria-label')||el.getAttribute('title')||el.textContent||'').trim();
-      return /^(下一页|下页|Next page|Next)$/i.test(label);
+      return /^(下一页|下页|Next page|Next|›|❯|→|>)$/i.test(label)||/(?:pagination|pager).*next|next.*(?:pagination|pager)/i.test(String(el.className||''));
     });
     const outer=candidates.filter(el=>!candidates.some(other=>other!==el&&other.contains(el)));
-    if(outer.length!==1)return {el:null,finished:false};
+    if(outer.length!==1){
+      const total=text().match(/(?:共有|共)\s*([\d,]+)\s*条/);
+      const count=listData().items.length;
+      if(total&&count>=Number(total[1].replaceAll(',','')))return {el:null,finished:true};
+      const roots=[...document.querySelectorAll('[class*="pagination"],[class*="Pagination"],[class*="pager"],[role="navigation"]')].filter(visible);
+      for(const root of roots){
+        const controls=[...root.querySelectorAll('button,a,li,[role="button"]')].filter(visible);
+        const current=controls.filter(el=>el.getAttribute('aria-current')==='page'||/(?:^|[-_\s])(?:active|selected|current)(?:$|[-_\s])/i.test(String(el.className||'')));
+        if(current.length!==1||!/^\d+$/.test(current[0].textContent.trim()))continue;
+        const next=controls.filter(el=>el.textContent.trim()===String(Number(current[0].textContent.trim())+1));
+        if(next.length===1)return {el:next[0],finished:false};
+      }
+      return {el:null,finished:false};
+    }
     const el=outer[0],disabled=el.disabled||el.getAttribute('aria-disabled')==='true'||/disabled/i.test(String(el.className||'')+' '+String(el.parentElement?.className||''));
     return {el:disabled?null:el,finished:!!disabled};
   }
