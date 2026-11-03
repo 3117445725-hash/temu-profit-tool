@@ -1,5 +1,5 @@
 const $=id=>document.getElementById(id);
-let imported=null,updating=false;
+let imported=null,updating=false,lastActionError="";
 async function ask(type,extra={}){
   const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
   const result=await chrome.runtime.sendMessage({type,tabId:tab?.id,...extra});
@@ -10,7 +10,7 @@ async function refresh(){
   const bridge=await ask('BRIDGE_STATUS');
   $('bridge').textContent=bridge.connected?'本机桥接：已连接':bridge.configured?'本机桥接：未连接 '+(bridge.lastError||''):'本机桥接：尚未配对';
   const s=await ask('STATUS');const j=s.job;
-  $('status').textContent='已保存 '+s.count+' 条订单/SKU价格\n'+(j?`${j.active?'采集中':'暂停/完成'}：${j.message}\n本任务已处理 ${j.processed?.length||0} 个订单\n${j.order||''}`:'尚无批量任务')+'\n'+s.errors.map(e=>(e.order||'')+' '+e.reason).join('\n');
+  $('status').textContent=(lastActionError?'操作失败：'+lastActionError+'\n\n':'')+'已保存 '+s.count+' 条订单/SKU价格\n'+(j?`${j.active?'采集中':'暂停/完成'}：${j.message}\n本任务已处理 ${j.processed?.length||0} 个订单\n${j.order||''}`:'尚无批量任务')+'\n'+s.errors.map(e=>(e.order||'')+' '+e.reason).join('\n');
 }
 $('connect').onclick=async()=>{await ask('BRIDGE_TOGGLE',{enabled:true});await refresh();};
 $('disconnect').onclick=async()=>{await ask('BRIDGE_TOGGLE',{enabled:false});await refresh();};
@@ -47,5 +47,5 @@ for(const [id,type] of Object.entries({capture:'CAPTURE',pause:'PAUSE',resume:'R
 chrome.storage.local.get(['selectedMonth','importedOrders']).then(s=>{if(s.selectedMonth)$('month').value=s.selectedMonth;if(s.importedOrders){imported=s.importedOrders;$('importStatus').textContent=`已保留 ${imported.orders.length} 个待采订单，已排除取消记录`;}});
 refresh();setInterval(refresh,2000);
 
-$('quiet').onclick=async()=>{try{await chrome.storage.local.set({selectedMonth:$('month').value});await ask('START_PLATFORM',{month:$('month').value});await refresh();}catch(e){$('status').textContent=e.message;}};
+$('quiet').onclick=async()=>{lastActionError='';updating=true;$('status').textContent='正在建立后台任务并识别真实详情地址，请稍候…';try{await chrome.storage.local.set({selectedMonth:$('month').value});await ask('START_PLATFORM',{month:$('month').value});updating=false;await refresh();}catch(e){updating=false;lastActionError=e.message;await refresh();}};
 $('update').onclick=async()=>{updating=true;try{const r=await ask('EXTENSION_UPDATE',{operation:'check'});$('status').textContent=r.message||'检查中';if(r.available&&confirm('发现插件 '+r.available+'，现在更新？采集记录保留，正在采集的任务将暂停。')){await ask('PAUSE');await ask('EXTENSION_UPDATE',{operation:'apply'});$('status').textContent='正在下载并校验更新…';const timer=setInterval(async()=>{try{const s=await ask('EXTENSION_UPDATE',{operation:'status'});$('status').textContent=s.message||s.state;if(s.state==='done'){clearInterval(timer);chrome.runtime.reload();}if(s.state==='error'){clearInterval(timer);updating=false;}}catch(e){clearInterval(timer);$('status').textContent=e.message;}},1500);}else updating=false;}catch(e){updating=false;$('status').textContent=e.message;}};
