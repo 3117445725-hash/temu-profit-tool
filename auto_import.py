@@ -149,6 +149,17 @@ def calculate_auto(paths,month,date_field='订单创建时间',freight='0',curre
  selected_ids={core.key(r.get('SKU ID')) for r in order['records'] if core.key(r.get('SKU ID'))}
  needed_refs={core.sku_key(r.get('SKU货号') or r.get('SKC货号')) for t in data if '货号映射' in t['roles'] for r in t['records'] if core.key(r.get('SKU ID')) in selected_ids}
  needed_refs.discard('')
+ # Within a workbook, complete cost tables own populated fields. Partial analysis/
+ # rate sheets may fill absent fields, but cannot create a second cost for them.
+ complete_fields={}
+ for table in data:
+  if '成本' not in table['roles'] or not set(COSTS).issubset(table['fields']):continue
+  for record in table['records']:
+   ref=core.sku_key(record.get('SKU货号'))
+   if ref not in needed_refs:continue
+   complete_fields.setdefault((table['path'],ref),set()).update(name for name in COSTS if core.key(record.get(name)))
+ ignored_auxiliary=set()
+
  def provenance(role,canonical_row,t,r):
   source_map.append({'标准角色':role,'标准行':canonical_row,'原文件':t['path'],'原工作表':t['sheet'],'原行':r['__source_row__']})
  for i,r in enumerate(order['records'],2):provenance('订单',i,order,r)
@@ -167,6 +178,8 @@ def calculate_auto(paths,month,date_field='订单创建时间',freight='0',curre
     for name in COSTS:
      value=r.get(name)
      if not core.key(value):continue
+     if not set(COSTS).issubset(t['fields']) and name in complete_fields.get((t['path'],ref),set()):
+      ignored_auxiliary.add((t['path'],t['sheet'],name));continue
      if name in group['values']:
       try:equal=core.number(group['values'][name])==core.number(value)
       except ValueError:equal=core.key(group['values'][name])==core.key(value)
@@ -205,5 +218,6 @@ def calculate_auto(paths,month,date_field='订单创建时间',freight='0',curre
   notify('正在核对件数并计算利润')
   result=core.calculate(op,pp,up,sp,cp,month,date_field,freight,currency,refund)
  result['import_report']=[{'文件':x['path'],'工作表':x['sheet'],'表头末行':x['header_row'],'字段':'、'.join(x['fields']),'角色':'、'.join(x['roles'])} for x in report['tables']]
+ result['warnings'].extend({'阶段':'成本来源','订单号':'','SKU ID':'','原因':'同一工作簿完整成本表优先；辅助表 '+sheet+' 的 '+name+' 不覆盖主表；文件 '+path} for path,sheet,name in sorted(ignored_auxiliary))
  result['source_map']=source_map
  return result
