@@ -85,8 +85,28 @@ async function handle(msg,sender){
     const host=new URL(tab.url).hostname;let template;
     for(const r of Object.values(s.records)){template=detailTemplate(r.source,host);if(template)break;}
     if(!template){const tabs=await chrome.tabs.query({});for(const t of tabs){template=detailTemplate(t.url,host);if(template)break;}}
-    if(!template)throw Error('请先手动打开本店铺任意订单详情，以确认真实详情地址');
     const list=await chrome.tabs.create({url:tab.url,active:false});
+    if(!template){
+      const owned=new Set([list.id]);
+      try{
+        let first;
+        for(let attempt=0;attempt<30;attempt++){
+          const data=await send(list.id,{type:'LIST'});first=data.orders?.[0];
+          if(first)break;await new Promise(resolve=>setTimeout(resolve,500));
+        }
+        if(!first)throw Error('后台订单列表未加载到详情入口，请检查登录状态');
+        const opened=await send(list.id,{type:'OPEN_ORDER',order:first});
+        if(opened.error)throw Error(opened.error);
+        for(let attempt=0;attempt<30;attempt++){
+          const candidates=await chrome.tabs.query({});
+          for(const t of candidates){if(t.id===list.id||t.openerTabId===list.id){owned.add(t.id);template=detailTemplate(t.url,host);if(template)break;}}
+          if(template)break;await new Promise(resolve=>setTimeout(resolve,500));
+        }
+        if(!template)throw Error('后台未取得真实详情地址，请检查平台是否阻止打开详情');
+        for(const id of owned)if(id!==list.id)await chrome.tabs.remove(id);
+        await chrome.tabs.update(list.id,{url:tab.url,active:false});
+      }catch(error){for(const id of owned)try{await chrome.tabs.remove(id);}catch{}throw error;}
+    }
     s.job={active:true,platform:true,quiet:true,base:tab.id,listTab:list.id,listURL:tab.url,detail:null,worker:null,template,month:msg.month,pending:[],index:0,processed:[],stage:'prepare',signature:null,pageCount:0,message:'准备后台全部状态订单列表',started:Date.now()};await save(s);return {ok:true};
   }
   if(msg.type==='START_IMPORTED'){
