@@ -79,7 +79,7 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
     if freight_income<0: raise ValueError('运费收入不能为负')
     freight_currency=key(freight_currency).upper()
     if not freight_currency: raise ValueError('请选择运费收入币种')
-    issues=[]; details=[]; warnings=[]; estimated=[]
+    issues=[]; details=[]; warnings=[]; estimated=[];quantity_checks=[]
     def issue(stage,order='',sku='',reason='',order_qty=None): issues.append({'阶段':stage,'订单号':order,'SKU ID':sku,'原因':reason,'订单应履约件数':order_qty})
     products=defaultdict(set)
     product_it=iter(rows(product_path));header=[key(v) for v in next(product_it)]
@@ -164,11 +164,17 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
             match=matches[0]
             if match[0]=='ERROR': raise ValueError('结算数值错误: '+match[1]+'；来源 '+match[2]+' 第'+str(match[3])+'行，请核对件数、申报价格和币种')
             q,p,currency,status,source_row=match
+            qty_status='一致' if q is not None and order_qty is not None and q==order_qty else '不一致' if q is not None and order_qty is not None else '结算缺件数' if q is None else '订单缺件数'
+            quantity_checks.append({'订单号':order,'SKU ID':sku,'订单应履约件数':order_qty,'结算件数':q,'差额(结算-订单)':q-order_qty if q is not None and order_qty is not None else None,'采用件数':q,'件数来源':quantity_source,'对比结果':qty_status,'结算状态':status,'结算源行':source_row})
+            if qty_status=='一致':q=order_qty;quantity_source='订单表应履约件数（与结算一致）'
+            if qty_status=='不一致':warnings.append({'阶段':'件数核对','订单号':order,'SKU ID':sku,'原因':'订单件数 '+str(order_qty)+' 与结算件数 '+str(q)+' 不一致；按结算件数计算，请核对部分履约、取消或拆单'})
             if q is None and order_qty is not None:
                 q=order_qty;quantity_source='订单表应履约件数'
                 warnings.append({'阶段':'件数补充','订单号':order,'SKU ID':sku,'原因':'结算件数空白，采用订单表应履约件数 '+str(q)})
+            quantity_checks[-1].update({'采用件数':q,'件数来源':quantity_source if q is not None else '缺件数'})
             if q is None:raise ValueError('结算表缺少件数；按申报价格10%估算，未乘件数')
-            refs=products.get(sku,set())
+            order_ref=sku_key(r.get('SKU货号') or r.get('货号'))
+            refs={order_ref} if order_ref else products.get(sku,set())
             if not refs:raise ValueError('商品表未找到SKU ID '+sku+'；请核对店铺或补充该SKU的商品基础信息')
             if len(refs)!=1:raise ValueError('SKU ID '+sku+' 对应多个六位货号：'+','.join(sorted(refs))+'；请核实商品表对应关系')
             if not next(iter(refs),''):raise ValueError('SKU ID '+sku+' 的E列货号（空时取D列）不是以6位数字开头；请修正商品表货号')
@@ -186,7 +192,9 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
         except ValueError as e:
             if p is not None:
                 estimated.append({'订单号':order,'SKU ID':sku,'月份':selected_month,'结算状态':status,'币种':currency,'件数':q,'申报价格':p,'件数来源':quantity_source if q is not None else '无件数','估算比例':Decimal('0.10'),'估算利润':p*Decimal('0.10')*(q if q is not None else Decimal(1)),'估算依据':'申报价格×10%×件数' if q is not None else '申报价格×10%（缺件数）','估算原因':str(e),'结算源行':source_row})
-            else:issue('匹配/计算',order,sku,str(e)+('；已读取订单应履约件数 '+str(order_qty)+'，但缺少可靠申报价格，仍不计入利润' if order_qty is not None else ''),order_qty)
+            else:
+                quantity_checks.append({'订单号':order,'SKU ID':sku,'订单应履约件数':order_qty,'结算件数':None,'差额(结算-订单)':None,'采用件数':order_qty,'件数来源':'订单表（无申报价格，未计算）','对比结果':'无可用结算，无法对比','结算状态':'','结算源行':None})
+                issue('匹配/计算',order,sku,str(e)+('；已读取订单应履约件数 '+str(order_qty)+'，但缺少可靠申报价格，仍不计入利润' if order_qty is not None else ''),order_qty)
     summary={}
     for d in details:
         k=(d['SKU货号'],d['币种']);s=summary.setdefault(k,{'SKU货号':k[0],'币种':k[1],'件数':Decimal(0),'申报总额':Decimal(0),'总成本':Decimal(0),'利润':Decimal(0)})
@@ -197,12 +205,12 @@ def calculate(order_path,product_path,unsettled_path,settled_path,cost_path,sele
     for d in estimated:estimates[d['币种']]+=d['估算利润'];totals.setdefault(d['币种'],Decimal(0))
     totals.setdefault(freight_currency,Decimal(0))
     final=[{'币种':c,'正常计算利润':v,'估算利润':estimates[c],'利润':v+estimates[c],'手填运费收入':freight_income if c==freight_currency else Decimal(0),'最终利润':v+estimates[c]+(freight_income if c==freight_currency else Decimal(0))} for c,v in totals.items()] if details or estimated else []
-    return {'details':details,'summary':list(summary.values()),'totals':final,'refund_percent':refund_percent,'exceptions':issues,'warnings':warnings,'estimated':estimated,'estimated_orders':len(estimated),'failed_orders':len(seen)-len(details)-len(estimated),'selected_orders':len(seen),'month':selected_month,'date_field':date_field}
+    return {'details':details,'summary':list(summary.values()),'totals':final,'refund_percent':refund_percent,'exceptions':issues,'warnings':warnings,'quantity_checks':quantity_checks,'estimated':estimated,'estimated_orders':len(estimated),'failed_orders':len(seen)-len(details)-len(estimated),'selected_orders':len(seen),'month':selected_month,'date_field':date_field}
 
 def export_xlsx(result,path):
     w=openpyxl.Workbook();w.remove(w.active)
     from openpyxl.styles import Font,PatternFill
-    for title,data in [('利润明细',result['details']),('估算利润明细',result.get('estimated',[])),('SKU汇总',result['summary']),('利润合计',result.get('totals',[])),('异常清单',result['exceptions']),('处理提示',result.get('warnings',[]))]:
+    for title,data in [('利润明细',result['details']),('估算利润明细',result.get('estimated',[])),('SKU汇总',result['summary']),('利润合计',result.get('totals',[])),('异常清单',result['exceptions']),('处理提示',result.get('warnings',[])),('件数对比',result.get('quantity_checks',[])),('自动识别报告',result.get('import_report',[])),('数据来源追溯',result.get('source_map',[]))]:
         s=w.create_sheet(title)
         if data:
             h=list(data[0]);s.append(h)
@@ -223,4 +231,5 @@ def export_xlsx(result,path):
     s.append(['预计退款比例',str(result.get('refund_percent',10))+'%（手填）；预计退款成本=申报价格×此比例，不读取成本表Y列。'])
     s.append(['货号匹配','商品货号与成本表货号均取开头6位数字，保留前导零；截取后多个成本记录仍提示异常。'])
     w.save(path)
+
 
