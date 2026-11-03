@@ -7,12 +7,12 @@ from core import scan_orders, calculate, export_xlsx, number
 from auto_import import scan_auto,calculate_auto
 from updater import check_update,download_update,install_update
 import state_store
-VERSION='6.3.0'
+VERSION='6.3.1'
 
 class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title('月度利润计算工具 v6.3.0（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
+        self.title('月度利润计算工具 v6.3.1（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
         self._restoring=True;self._state_timer=None
         self.events=queue.Queue(); self.result=None; self.months={}; self.busy=False; self.scanned_path=None
         box=ttk.Frame(self,padding=22); box.pack(fill='both',expand=True)
@@ -46,6 +46,7 @@ class App(TkinterDnD.Tk):
         fr=ttk.Frame(box);fr.pack(fill='x',pady=(0,12))
         ttk.Label(fr,text='当月运费收入（合计，仅加一次）').pack(side='left')
         self.freight=tk.StringVar(value='0');ttk.Entry(fr,textvariable=self.freight,width=18).pack(side='left',padx=8)
+        ttk.Label(fr,text='统一单位').pack(side='left',padx=5)
         self.currency=tk.StringVar(value='USD');ttk.Combobox(fr,textvariable=self.currency,values=['USD','CNY','EUR','GBP','CAD','AUD'],width=8).pack(side='left')
         rr=ttk.Frame(box);rr.pack(fill='x',pady=(0,12))
         ttk.Label(rr,text='当月预计退款比例').pack(side='left')
