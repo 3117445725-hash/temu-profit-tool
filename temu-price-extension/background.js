@@ -85,6 +85,9 @@ async function handle(msg,sender){
     const host=new URL(tab.url).hostname;let template;
     for(const r of Object.values(s.records)){template=detailTemplate(r.source,host);if(template)break;}
     if(!template){const tabs=await chrome.tabs.query({});for(const t of tabs){template=detailTemplate(t.url,host);if(template)break;}}
+    // This exact detail route and its order parameter were verified on the live US seller site.
+    // No synthetic window.open is needed; each worker replaces the order with a real list order.
+    if(!template&&host==='agentseller-us.temu.com')template='https://agentseller-us.temu.com/mmsos/order-detail.html?timezone=UTC%2B8&parent_order_sn=PO-211-0&fulfillment_mode=0';
     const list=await chrome.tabs.create({url:tab.url,active:false});
     if(!template){
       const owned=new Set([list.id]);
