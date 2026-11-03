@@ -5,12 +5,12 @@ import threading, queue
 from tkinterdnd2 import TkinterDnD, DND_FILES, COPY, REFUSE_DROP
 from core import scan_orders, calculate, export_xlsx, number
 from updater import check_update,download_update,install_update
-VERSION='6.1.1'
+VERSION='6.2.0'
 
 class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title('月度利润计算工具 v6.1.1（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
+        self.title('月度利润计算工具 v6.2.0（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
         self.events=queue.Queue(); self.result=None; self.months={}; self.busy=False; self.scanned_path=None
         box=ttk.Frame(self,padding=22); box.pack(fill='both',expand=True)
         ttk.Label(box,text='月度利润计算',font=('Microsoft YaHei UI',22,'bold')).pack(anchor='w')
@@ -130,10 +130,11 @@ class App(TkinterDnD.Tk):
         self.task(lambda:calculate(*paths,month,date,freight,currency,refund),self.calculated)
     def calculated(self,r):
         self.result=r;self.save.config(state='normal');self.log.delete('1.0','end')
-        self.status.set(f"{r['month']}：选中 {r['selected_orders']} 个唯一订单/SKU，成功 {len(r['details'])} 个，未计入 {r['failed_orders']} 个；异常提示 {len(r['exceptions'])} 条，处理提示 {len(r['warnings'])} 条。")
-        for t in r['totals']:self.log.insert('end',f"{t['币种']} 利润：{t['利润']:,.2f} + 运费收入：{t['手填运费收入']:,.2f} = 最终利润：{t['最终利润']:,.2f}\n")
+        self.status.set(f"{r['month']}：选中 {r['selected_orders']} 个唯一订单/SKU，正常 {len(r['details'])} 个，估算 {r['estimated_orders']} 个，未计入 {r['failed_orders']} 个；异常提示 {len(r['exceptions'])} 条，处理提示 {len(r['warnings'])} 条。")
+        for t in r['totals']:self.log.insert('end',f"{t['币种']} 正常：{t['正常计算利润']:,.2f} + 估算：{t['估算利润']:,.2f} = 利润：{t['利润']:,.2f} + 运费收入：{t['手填运费收入']:,.2f} = 最终利润：{t['最终利润']:,.2f}\n")
+        for d in r['estimated']:self.log.insert('end',f"[估算10%] {d['订单号']} / {d['SKU ID']}：{d['估算原因']}；估算利润 {d['估算利润']:,.2f}\n\n")
         for i in r['exceptions']:self.log.insert('end',f"[{i['阶段']}] {i['订单号']} / {i['SKU ID']}：{i['原因']}\n\n")
-        if not r['details']:self.log.insert('end','没有可计入利润的记录，请检查异常清单。\n')
+        if not r['details'] and not r['estimated']:self.log.insert('end','没有可计入利润的记录，请检查异常清单。\n')
     def export(self):
         if not self.result:return
         p=filedialog.asksaveasfilename(defaultextension='.xlsx',initialfile='利润报告_'+self.result['month']+'.xlsx',filetypes=[('Excel','*.xlsx')])
