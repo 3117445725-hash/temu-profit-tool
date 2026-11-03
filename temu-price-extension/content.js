@@ -32,7 +32,21 @@
       const created=value.match(/订单创建时间\s*[:：]?\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2})/);
       items.push({order,status,created:created?created[1].replaceAll('/','-'):''});
     }
-    return {items,orders:items.filter(r=>r.status!=='已取消').map(r=>r.order),url:location.href};
+    // Cancelled rows may have no detail link: include order/status from the table itself.
+    for(const row of document.querySelectorAll('tr,[role="row"]')){
+      const value=row.innerText||'';
+      const ids=[...new Set(value.match(/\bPO-\d+-\d+\b/g)||[])];
+      if(ids.length!==1)continue;
+      const status=[...row.querySelectorAll('td,[role="cell"]')].some(c=>(c.innerText||'').replace(/\s+/g,'')==='已取消')?'已取消':'';
+      if(!items.some(r=>r.order===ids[0]))items.push({order:ids[0],status,created:''});
+    }
+    const body=text(),totalMatch=body.match(/(?:共有|共)\s*([\d,]+)\s*条/);
+    const total=totalMatch?Number(totalMatch[1].replaceAll(',','')):null;
+    const rawOrders=[...new Set(body.match(/\bPO-\d+-\d+\b/g)||[])];
+    for(const order of rawOrders)if(!items.some(r=>r.order===order))items.push({order,status:'',created:''});
+    const u=new URL(location.href);
+    const complete=u.searchParams.get('queryType')==='0'&&total!==null&&rawOrders.length===total;
+    return {items,orders:items.filter(r=>r.status!=='已取消').map(r=>r.order),url:location.href,total,rendered:rawOrders.length,complete};
   }
   async function prepareList(){
     if(location.pathname!=='/mmsos/orders.html')throw Error('当前不是已识别的订单列表页');
@@ -51,7 +65,7 @@
       if(control.tagName==='SELECT'&&[...control.options].some(o=>o.value==='500')){control.value='500';control.dispatchEvent(new Event('change',{bubbles:true}));}
       else if(String(control.value||control.textContent||'').trim()!=='500'){
         control.click();await new Promise(resolve=>setTimeout(resolve,200));
-        const options=[...document.querySelectorAll('[role="option"],[class*="select-option"],[class*="SelectOption"]')].filter(el=>visible(el)&&el.textContent.trim()==='500');
+        const options=[...document.querySelectorAll('[role="option"],li,span,div')].filter(el=>{if(!visible(el)||el.children.length||el.textContent.trim()!=='500')return false;let parent=el.parentElement;for(let n=0;parent&&n<4;n++,parent=parent.parentElement){const t=parent.innerText||'';if(t.length<150&&/20/.test(t)&&/100/.test(t))return true;}return false;});
         if(options.length===1)options[0].click();
       }
       await new Promise(resolve=>setTimeout(resolve,800));
@@ -66,7 +80,16 @@
     const status=text().match(/(?:^|\n)\s*状态\s*[:：]\s*([^\n]+)/);
     return {...parsed,status:status?status[1].trim():'',created:created?created[1].replaceAll('/','-'):'',url:location.href};
   }
-  function nextButton(){
+  function paginationDiagnostic(){
+    const controls=[...document.querySelectorAll('button,a,li,span,div,input,select,[role]')].filter(el=>{
+      if(!visible(el))return false;
+      const identity=String(el.className||'')+' '+(el.getAttribute('aria-label')||'')+' '+(el.getAttribute('title')||'');
+      return /pagin|pager|下一页|下页|page.?size/i.test(identity);
+    }).slice(-60);
+    const describe=el=>({tag:el.tagName,role:el.getAttribute('role'),className:String(el.className||''),label:el.getAttribute('aria-label'),title:el.getAttribute('title'),disabled:!!el.disabled,ariaDisabled:el.getAttribute('aria-disabled'),text:(el.innerText||el.textContent||'').trim().slice(0,180),value:el.value,children:[...el.children].slice(0,12).map(c=>({tag:c.tagName,className:String(c.className||''),role:c.getAttribute('role'),label:c.getAttribute('aria-label'),text:(c.innerText||c.textContent||'').trim().slice(0,70)}))});
+    return {version:chrome.runtime.getManifest().version,totalText:(text().match(/(?:共有|共)\s*[\d,]+\s*条[^\n]*/g)||[]).slice(-3),renderedOrders:listData().items.length,controls:controls.map(describe)};
+  }
+  function nextButton(targetPage){
     const candidates=[...document.querySelectorAll('button,a,li,[role="button"]')].filter(el=>{
       if(!visible(el))return false;
       const label=(el.getAttribute('aria-label')||el.getAttribute('title')||el.textContent||'').trim();
@@ -77,6 +100,17 @@
       const total=text().match(/(?:共有|共)\s*([\d,]+)\s*条/);
       const count=listData().items.length;
       if(total&&count>=Number(total[1].replaceAll(',','')))return {el:null,finished:true};
+      // Hashed CSS classes are not a reliable identifier. Scope numeric controls to the
+      // footer's actual total/page-size labels, and use the queue's expected page.
+      if(Number.isSafeInteger(targetPage)&&targetPage>1){
+        const footers=[...document.querySelectorAll('footer,nav,div')].filter(el=>visible(el)&&(el.innerText||'').length<800&&/(?:共有|共)\s*[\d,]+\s*条/.test(el.innerText||'')&&/每页/.test(el.innerText||''));
+        const scoped=footers.filter(el=>!footers.some(other=>other!==el&&el.contains(other)));
+        for(const root of scoped){
+          const exact=[...root.querySelectorAll('button,a,li,span,div,[role="button"]')].filter(el=>visible(el)&&el.textContent.trim()===String(targetPage));
+          const leaf=exact.filter(el=>!exact.some(other=>other!==el&&el.contains(other)));
+          if(leaf.length===1){const el=leaf[0].closest('button,a,li,[role="button"]')||leaf[0];if(!el.disabled&&el.getAttribute('aria-disabled')!=='true')return {el,finished:false};}
+        }
+      }
       const roots=[...document.querySelectorAll('[class*="pagination"],[class*="Pagination"],[class*="pager"],[role="navigation"]')].filter(visible);
       for(const root of roots){
         const controls=[...root.querySelectorAll('button,a,li,[role="button"]')].filter(visible);
@@ -94,14 +128,14 @@
     if(message.type==='PREPARE_LIST'){prepareList().then(reply,error=>reply({error:error.message}));return true;}
     try{
       if(message.type==='LIST')reply(listData());
-      else if(message.type==='DIAGNOSTIC')reply({url:location.href,title:document.title,ready:document.readyState,orderCount:detailTargets().size,detail:capture(),inputs:[...document.querySelectorAll('input')].filter(visible).map(el=>({type:el.type,placeholder:el.placeholder,label:el.getAttribute('aria-label')||'',name:el.name})),buttons:[...document.querySelectorAll('button,[role="button"]')].filter(visible).map(el=>el.innerText?.trim()).filter(Boolean).slice(0,60)});
+      else if(message.type==='DIAGNOSTIC')reply({url:location.href,title:document.title,ready:document.readyState,pagination:paginationDiagnostic(),orderCount:detailTargets().size,detail:capture(),inputs:[...document.querySelectorAll('input')].filter(visible).map(el=>({type:el.type,placeholder:el.placeholder,label:el.getAttribute('aria-label')||'',name:el.name})),buttons:[...document.querySelectorAll('button,[role="button"]')].filter(visible).map(el=>el.innerText?.trim()).filter(Boolean).slice(0,60)});
       else if(message.type==='CAPTURE_PAGE')reply(capture());
       else if(message.type==='OPEN_ORDER'){
         const el=detailTargets().get(message.order);
         if(!el){reply({error:'当前列表未找到该订单的详情入口'});return;}
         reply({ok:true});el.click();
       }else if(message.type==='NEXT_PAGE'){
-        const next=nextButton();if(!next.el){reply({ok:false,finished:next.finished});return;}
+        const next=nextButton(message.targetPage);if(!next.el){reply({ok:false,finished:next.finished});return;}
         reply({ok:true});next.el.click();
       }
     }catch(error){reply({error:String(error.message||error)});}
@@ -118,7 +152,7 @@
       }
       if(status.stage==='detail'){
         const result=capture();
-        if(result.order===status.order && (result.records.length || /申报价格|申报价/.test(body)))
+        if(result.order===status.order && (result.records.length || /申报价格|申报价/.test(body) || result.status==='已取消'))
           await chrome.runtime.sendMessage({type:'DETAIL_RESULT',result});
       }else if(['prepare','list','page'].includes(status.stage)){
         const list=listData();
