@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Temu 订单申报价格采集",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "在当前登录的 Temu 商家页面读取订单详情，按订单和SKU保存单件申报价格，仅本地存储。",
   "permissions": ["storage", "tabs", "downloads", "alarms", "scripting"],
   "host_permissions": ["https://agentseller-us.temu.com/*", "https://agentseller.temu.com/*", "http://127.0.0.1:18746/*"],
