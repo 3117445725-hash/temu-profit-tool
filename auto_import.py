@@ -1,5 +1,10 @@
 """Discover spreadsheet roles by fields; normalize locally for the calculation engine."""
-import csv,tempfile
+import csv,tempfile,re,zipfile
+from functools import lru_cache
+from xml.etree import ElementTree as ET
+from posixpath import dirname,join,normpath
+from openpyxl.utils.cell import range_boundaries
+from openpyxl.cell import WriteOnlyCell
 from pathlib import Path
 import openpyxl
 import core
@@ -13,6 +18,25 @@ def canonical(v):
   if s in aliases:return name
  return s
 
+def workbook_merges(path):
+ """Read only merge metadata from compressed XML; never materialize workbook cells."""
+ ns={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+ with zipfile.ZipFile(path) as archive:
+  rels=ET.fromstring(archive.read('xl/_rels/workbook.xml.rels'))
+  targets={r.attrib['Id']:normpath(join('xl',r.attrib['Target'])).lstrip('/') if not r.attrib['Target'].startswith('/') else r.attrib['Target'].lstrip('/') for r in rels}
+  book=ET.fromstring(archive.read('xl/workbook.xml'));result={}
+  for sheet in book.find('s:sheets',ns):
+   rid=sheet.attrib['{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'];target=targets[rid];ranges=[];tail=b''
+   with archive.open(target) as stream:
+    while True:
+     chunk=stream.read(1024*1024)
+     if not chunk:break
+     block=tail+chunk
+     ranges.extend(range_boundaries(m.decode('ascii')) for m in re.findall(rb'<(?:[A-Za-z0-9_]+:)?mergeCell\s+ref="([A-Z]+[0-9]+:[A-Z]+[0-9]+)"',block))
+     tail=block[-100:]
+   result[sheet.attrib['name']]=list(dict.fromkeys(ranges))
+  return result
+
 def tables(paths):
  for raw in dict.fromkeys(str(p) for p in paths if p):
   path=Path(raw)
@@ -25,22 +49,30 @@ def tables(paths):
    else:raise ValueError('CSV编码无法识别: '+path.name)
    yield str(path),'CSV',data
   elif path.suffix.lower()=='.xlsx':
-   w=openpyxl.load_workbook(path,read_only=False,data_only=True)
+   w=openpyxl.load_workbook(path,read_only=True,data_only=True)
    try:
+    merges=workbook_merges(path)
     for sheet in w:
-     # Fill only genuine merged cells; never carry arbitrary blank values forward.
-     merged={}
-     for area in sheet.merged_cells.ranges:
-      value=sheet.cell(area.min_row,area.min_col).value
-      if area.max_row-area.min_row>10000:continue
-      for row in range(area.min_row,area.max_row+1):
-       for col in range(area.min_col,area.max_col+1):merged[(row,col)]=value
-     data=[[merged.get((ri,ci),v) for ci,v in enumerate(row,1)] for ri,row in enumerate(sheet.iter_rows(values_only=True),1)]
+     starts={}
+     for min_col,min_row,max_col,max_row in merges.get(sheet.title,[]):
+      if max_row-min_row>10000:continue
+      starts.setdefault(min_row,[]).append((min_col,max_col,max_row))
+     active=[];data=[]
+     for ri,values in enumerate(sheet.iter_rows(values_only=True),1):
+      row=list(values)
+      for lo,hi,end in starts.get(ri,[]):
+       value=row[lo-1] if len(row)>=lo else None
+       active.append((lo,hi,end,value))
+      for lo,hi,end,value in active:
+       if len(row)<hi:row.extend([None]*(hi-len(row)))
+       row[lo-1:hi]=[value]*(hi-lo+1)
+      active=[area for area in active if area[2]>ri]
+      data.append(row)
      yield str(path),sheet.title,data
    finally:w.close()
   else:raise ValueError('不支持的文件: '+path.name)
 
-def discover(paths):
+def _discover(paths):
  found=[]
  for path,sheet,data in tables(paths):
   candidates=[]
@@ -71,6 +103,14 @@ def discover(paths):
   found.append({'path':path,'sheet':sheet,'header_row':offset,'fields':list(cols),'roles':roles,'records':records,'dates':dates})
  return found
 
+@lru_cache(maxsize=2)
+def _cached_discover(signature):
+ return _discover([entry[0] for entry in signature])
+
+def discover(paths):
+ signature=tuple((str(Path(p).resolve()),Path(p).stat().st_size,Path(p).stat().st_mtime_ns) for p in dict.fromkeys(paths) if p)
+ return _cached_discover(signature)
+
 def inspect_files(paths,_data=None):
  data=discover(paths) if _data is None else _data;orders=[t for t in data if '订单' in t['roles']]
  if not orders:raise ValueError('所有表中均未识别到同时含订单号、SKU ID和日期的订单数据')
@@ -86,20 +126,29 @@ def inspect_files(paths,_data=None):
  return {'fields':t['dates'],'months':months,'tables':[{k:v for k,v in x.items() if k not in ('records','dates')} for x in data],'order_source':t['path']+' / '+t['sheet']}
 
 def write_book(path,rows,title='Sheet1'):
- w=openpyxl.Workbook();s=w.active;s.title=title
+ w=openpyxl.Workbook(write_only=True);sheet=w.create_sheet(title)
  for row in rows:
-  s.append(row)
-  for c in s[s.max_row]:
-   if isinstance(c.value,str):c.data_type='s'
+  values=[]
+  for value in row:
+   if isinstance(value,str):
+    cell=WriteOnlyCell(sheet,value=value);cell.data_type='s';values.append(cell)
+   else:values.append(value)
+  sheet.append(values)
  w.save(path)
 
 def scan_auto(paths):
  report=inspect_files(paths)
  return report['fields'],report['months']
 
-def calculate_auto(paths,month,date_field='订单创建时间',freight='0',currency='USD',refund='10'):
+def calculate_auto(paths,month,date_field='订单创建时间',freight='0',currency='USD',refund='10',progress=None):
+ notify=progress or (lambda text:None)
+ notify('读取并识别文件；大成本表首次加载较慢，未修改文件会复用缓存')
  data=discover(paths);report=inspect_files(paths,data);order=next(t for t in data if '订单' in t['roles'])
+ notify('文件读取完成，正在建立订单和相关SKU的成本索引')
  products=set();product_sources=[];settlements={'未结算':[],'已结算':[]};pairs=set();cost_rows=[];cost_groups={};source_map=[]
+ selected_ids={core.key(r.get('SKU ID')) for r in order['records'] if core.key(r.get('SKU ID'))}
+ needed_refs={core.sku_key(r.get('SKU货号') or r.get('SKC货号')) for t in data if '货号映射' in t['roles'] for r in t['records'] if core.key(r.get('SKU ID')) in selected_ids}
+ needed_refs.discard('')
  def provenance(role,canonical_row,t,r):
   source_map.append({'标准角色':role,'标准行':canonical_row,'原文件':t['path'],'原工作表':t['sheet'],'原行':r['__source_row__']})
  for i,r in enumerate(order['records'],2):provenance('订单',i,order,r)
@@ -112,7 +161,7 @@ def calculate_auto(paths,month,date_field='订单创建时间',freight='0',curre
    for r in t['records']:
     if not core.key(r.get('SKU货号')):continue
     ref=core.sku_key(r['SKU货号'])
-    if not ref:continue
+    if not ref or ref not in needed_refs:continue
     group=cost_groups.setdefault(ref,{'values':{},'conflicts':False,'sources':[]})
     group['sources'].append((t,r))
     for name in COSTS:
@@ -153,6 +202,7 @@ def calculate_auto(paths,month,date_field='订单创建时间',freight='0',curre
   for label,path in [('未结算',up),('已结算',sp)]:
    write_book(path,[heads,heads]+[[r.get('订单号'),r.get('SKU ID'),r.get('应履约件数'),r.get('申报价格'),r.get('币种')] for r in settlements[label]])
   write_book(cp,[['成本表'],[],[]]+cost_rows,'TEMU-半托管 定价表')
+  notify('正在核对件数并计算利润')
   result=core.calculate(op,pp,up,sp,cp,month,date_field,freight,currency,refund)
  result['import_report']=[{'文件':x['path'],'工作表':x['sheet'],'表头末行':x['header_row'],'字段':'、'.join(x['fields']),'角色':'、'.join(x['roles'])} for x in report['tables']]
  result['source_map']=source_map
