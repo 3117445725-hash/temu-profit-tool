@@ -117,16 +117,24 @@ $destination = {ps_quote(appdir)}
 $stage = {ps_quote(stage)}
 $backup = {ps_quote(backup)}
 $moved = $false
+Set-Location -LiteralPath {ps_quote(source.parent)}
 try {{
  $process = Get-Process -Id {os.getpid()} -ErrorAction SilentlyContinue
  if ($process) {{ $process.WaitForExit() }}
- [System.IO.Directory]::Move($destination, $backup)
+ $ready = $false
+ for ($attempt=0; $attempt -lt 60; $attempt++) {{
+  try {{ [System.IO.Directory]::Move($destination, $backup); $ready=$true; break }}
+  catch {{ Start-Sleep -Milliseconds 500 }}
+ }}
+ if (-not $ready) {{ throw '程序目录仍被占用，更新未完成，请关闭其他工具窗口后重试' }}
  $moved = $true
  [System.IO.Directory]::Move($stage, $destination)
  $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
  Start-Process -FilePath (Join-Path $destination 'ProfitTool.exe') -WorkingDirectory $destination -WindowStyle Hidden
 }} catch {{
- $_ | Out-String | Set-Content -LiteralPath {ps_quote(str(source)+'.error.txt')}
+ $_ | Out-String | Set-Content -Encoding UTF8 -LiteralPath {ps_quote(str(source)+'.error.txt')}
+ Add-Type -AssemblyName PresentationFramework
+ [System.Windows.MessageBox]::Show('更新未完成，已保留原版。请关闭其他工具窗口后重试。日志：'+{ps_quote(str(source)+'.error.txt')},'更新失败') | Out-Null
  if ($moved) {{
   if (Test-Path -LiteralPath $destination) {{ [System.IO.Directory]::Move($destination, $stage + '.failed') }}
   [System.IO.Directory]::Move($backup, $destination)
@@ -136,7 +144,7 @@ try {{
 }}
 '''
         helper.write_text(script,encoding='utf-8-sig')
-        subprocess.Popen(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),close_fds=True)
+        subprocess.Popen(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),close_fds=True,cwd=str(source.parent))
         return helper
     helper=source.parent/'install.ps1';pid=os.getpid()
     script=f'''$ErrorActionPreference = 'Stop'
@@ -164,5 +172,5 @@ try {{
 }}
 '''
     helper.write_text(script,encoding='utf-8-sig')
-    subprocess.Popen(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),close_fds=True)
+    subprocess.Popen(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),close_fds=True,cwd=str(source.parent))
     return helper
