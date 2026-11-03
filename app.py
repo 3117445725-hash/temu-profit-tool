@@ -1,18 +1,18 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
-import threading, queue
+import threading, queue, time
 from tkinterdnd2 import TkinterDnD, DND_FILES, COPY, REFUSE_DROP
 from core import scan_orders, calculate, export_xlsx, number
 from auto_import import scan_auto,calculate_auto
 from updater import check_update,download_update,install_update
 import state_store
-VERSION='6.3.1'
+VERSION='6.3.2'
 
 class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title('月度利润计算工具 v6.3.1（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
+        self.title('月度利润计算工具 v6.3.2（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
         self._restoring=True;self._state_timer=None
         self.events=queue.Queue(); self.result=None; self.months={}; self.busy=False; self.scanned_path=None
         box=ttk.Frame(self,padding=22); box.pack(fill='both',expand=True)
@@ -160,7 +160,7 @@ class App(TkinterDnD.Tk):
         return COPY
     def task(self,fn,done):
         if self.busy:return
-        self.busy=True
+        self.busy=True;self._task_started=time.monotonic();self._task_progress='正在读取和核对'
         self.run.config(state='disabled');self.save.config(state='disabled');self.bar.start();self.status.set('正在读取和核对，请稍候…')
         def worker():
             try:self.events.put((done,fn(),None))
@@ -168,10 +168,14 @@ class App(TkinterDnD.Tk):
         threading.Thread(target=worker,daemon=True).start()
     def poll(self):
         try:
-            done,data,error=self.events.get_nowait();self.busy=False;self.bar.stop();self.run.config(state='normal')
-            if error:self.status.set('操作失败：'+error);messagebox.showerror('操作失败',error)
-            else:done(data)
+            done,data,error=self.events.get_nowait()
+            if done=='progress':self._task_progress=data
+            else:
+                self.busy=False;self.bar.stop();self.run.config(state='normal')
+                if error:self.status.set('操作失败：'+error);messagebox.showerror('操作失败',error)
+                else:done(data)
         except queue.Empty:pass
+        if self.busy:self.status.set(self._task_progress+'；已用 '+str(int(time.monotonic()-self._task_started))+' 秒')
         self.after(100,self.poll)
     def scan(self):
         if self.busy:return
@@ -199,7 +203,7 @@ class App(TkinterDnD.Tk):
         except ValueError as e:return messagebox.showerror('输入无效',str(e))
         month,date=self.mon.get(),self.date.get();self.result=None
         self._calculation_inputs=self.input_signature()
-        self.task(lambda:calculate_auto(paths,month,date,freight,currency,refund),self.calculated)
+        self.task(lambda:calculate_auto(paths,month,date,freight,currency,refund,progress=lambda text:self.events.put(('progress',text,None))),self.calculated)
     def calculated(self,r):
         if self.input_signature()!=self._calculation_inputs:
             self.result=None;self.save.config(state='disabled');self.status.set('计算期间输入已修改，请重新计算。');self.schedule_state();return
