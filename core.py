@@ -56,7 +56,11 @@ def month(v):
     if isinstance(v,datetime): return v.strftime('%Y-%m')
     s=key(v).replace('/','-')
     try: return datetime.fromisoformat(s).strftime('%Y-%m')
-    except ValueError: raise ValueError('无效日期: '+s)
+    except ValueError:
+        for fmt in ('%Y-%m-%d %H:%M:%S','%Y-%m-%d %H:%M','%Y-%m-%d'):
+            try:return datetime.strptime(s,fmt).strftime('%Y-%m')
+            except ValueError:pass
+        raise ValueError('无效日期: '+s)
 
 def scan_orders(path):
     data=orders(path)
