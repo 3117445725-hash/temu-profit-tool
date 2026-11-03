@@ -33,6 +33,7 @@ function createdMonth(value){const m=String(value||'').match(/^(\d{4})[-/](\d{1,
 async function pausePlatform(s,reason){s.job.active=false;s.job.message=reason;addError(s,s.job.order||'',reason);await save(s);}
 async function platformPage(s,page){
   const j=s.job,items=Array.isArray(page.items)?page.items:[];
+  if(Number.isSafeInteger(page.total)&&page.total>=0)j.expectedTotal=page.total;
   const orders=[...new Set([...(Array.isArray(page.orders)?page.orders:[]),...items.map(x=>x.order)].filter(o=>typeof o==='string'&&/^PO-\d+-\d+$/.test(o)))];
   if(!orders.length){await pausePlatform(s,'后台列表未读取到订单，请检查页面状态；未认定采集完成');return;}
   const signature=orders.join('|');
@@ -59,7 +60,7 @@ async function drive(s){
     if(j.platform){
       j.stage='page';j.started=Date.now();await save(s);const next=await send(j.listTab,{type:'NEXT_PAGE',targetPage:(j.pageCount||1)+1});
       if(!next.ok){
-        if(next.finished===true){j.active=false;j.message='所选月份后台采集完成';const ownList=j.listTab;j.listTab=null;await save(s);if(ownList&&ownList!==j.base)try{await chrome.tabs.remove(ownList);}catch{}}
+        if(next.finished===true){if(Number.isSafeInteger(j.expectedTotal)&&new Set(j.processed).size!==j.expectedTotal){await pausePlatform(s,'末页数量核对不符：已处理 '+new Set(j.processed).size+' / '+j.expectedTotal+' 单，保留记录，未认定完成');return;}j.active=false;j.message='所选月份后台采集完成';const ownList=j.listTab;j.listTab=null;await save(s);if(ownList&&ownList!==j.base)try{await chrome.tabs.remove(ownList);}catch{}}
         else await pausePlatform(s,next.error||'后台未找到明确可用的下一页按钮，已暂停；未认定全部完成');
       }return;
     }
@@ -183,7 +184,12 @@ async function handle(msg,sender){
       if(worker&&detailTemplate(worker.url,new URL(j.template).hostname)&&new URL(worker.url).searchParams.get('parent_order_sn')===j.pending[j.index]){j.detail=worker.id;j.stage='detail';await save(s);return {ok:true};}
       j.worker=null;j.detail=null;
       if(j.stage==='detail'||j.stage==='list'){j.stage='list';await save(s);await drive(s);}
-      else {if(j.stage!=='page')j.stage='ready';await save(s);await platformPage(s,await send(j.listTab,{type:'LIST'}));}return {ok:true};
+      else {
+        const page=await send(j.listTab,{type:'LIST'});
+        const signature=[...new Set([...(page.orders||[]),...(page.items||[]).map(r=>r.order)])].join('|');
+        if(j.stage==='page'&&signature===j.signature){j.stage='list';j.index=j.pending.length;await save(s);await drive(s);}
+        else{j.stage='ready';await save(s);await platformPage(s,page);}
+      }return {ok:true};
     }
     if(j.quiet){
       if(new URL(tab.url).hostname!==new URL(j.template).hostname)throw Error('当前店铺域名与后台任务不一致');
@@ -231,6 +237,7 @@ async function handle(msg,sender){
           addError(s,j.order,!actualMonth?'详情缺少可靠创建时间，未计入所选月份':'详情创建月份不符，跳过');result.records=[];
         }
         for(const sku of allowedIds)if(!result.records.some(r=>r.sku===sku))addError(s,j.order,'导入SKU '+sku+' 未在详情中读取到明确申报价格');
+        if((result.errors||[]).length)j.warningOrders=(j.warningOrders||0)+1;
         if(result.records.length)j.successfulOrders=(j.successfulOrders||0)+1;
         else{j.failedOrders=(j.failedOrders||0)+1;addError(s,j.order,'详情未取得可保存的本月价格：'+(result.errors||[]).join('；'));}
         remember(s,result,j.month);
