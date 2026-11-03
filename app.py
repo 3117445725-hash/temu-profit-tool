@@ -5,12 +5,14 @@ import threading, queue
 from tkinterdnd2 import TkinterDnD, DND_FILES, COPY, REFUSE_DROP
 from core import scan_orders, calculate, export_xlsx, number
 from updater import check_update,download_update,install_update
-VERSION='6.2.0'
+import state_store
+VERSION='6.2.1'
 
 class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title('月度利润计算工具 v6.2.0（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
+        self.title('月度利润计算工具 v6.2.1（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
+        self._restoring=True;self._state_timer=None
         self.events=queue.Queue(); self.result=None; self.months={}; self.busy=False; self.scanned_path=None
         box=ttk.Frame(self,padding=22); box.pack(fill='both',expand=True)
         ttk.Label(box,text='月度利润计算',font=('Microsoft YaHei UI',22,'bold')).pack(anchor='w')
@@ -53,11 +55,51 @@ class App(TkinterDnD.Tk):
         self.clear_button=ttk.Button(actions,text='清空记录',command=self.clear_records);self.clear_button.pack(side='right',padx=12)
         self.freight.trace_add('write',self.freight_changed);self.currency.trace_add('write',self.freight_changed)
         self.refund.trace_add('write',self.freight_changed)
+        self.restore_state()
+        self._restoring=False
+        for v in self.paths+[self.date,self.mon,self.freight,self.currency,self.refund]:v.trace_add('write',self.input_changed)
+        self.status.trace_add('write',self.schedule_state)
+        self.log.bind('<<Modified>>',self.log_changed)
+        self.log.edit_modified(False)
+        self.protocol('WM_DELETE_WINDOW',self.close_app)
         self.after(100,self.poll)
+    def restore_state(self):
+        data=state_store.load()
+        try:
+            for v,value in zip(self.paths,data.get('paths',[])):v.set(value)
+            for name in ['date','mon','freight','currency','refund']:
+                if name in data:getattr(self,name).set(data[name])
+            self.months=data.get('months',{});self.scanned_path=data.get('scanned_path')
+            self.dc['values']=list(self.months);self.mc['values']=self.months.get(self.date.get(),[])
+            self.result=data.get('result');self.log.insert('1.0',data.get('log',''))
+            if data.get('status'):self.status.set(data['status'])
+            self.save.config(state='normal' if self.result else 'disabled')
+        except (TypeError,ValueError,tk.TclError):self.result=None
+    def save_state(self):
+        self._state_timer=None
+        try:
+            state_store.save({'paths':[v.get() for v in self.paths],**{n:getattr(self,n).get() for n in ['date','mon','freight','currency','refund']},'months':self.months,'scanned_path':self.scanned_path,'result':self.result,'log':self.log.get('1.0','end-1c'),'status':self.status.get()})
+            return True
+        except Exception as e:
+            messagebox.showerror('保存记录失败',str(e));return False
+    def schedule_state(self,*_):
+        if self._restoring:return
+        if self._state_timer:self.after_cancel(self._state_timer)
+        self._state_timer=self.after(400,self.save_state)
+    def input_changed(self,*_):
+        if self._restoring:return
+        self.freight_changed();self.schedule_state()
+    def input_signature(self):
+        return tuple(v.get() for v in self.paths+[self.date,self.mon,self.freight,self.currency,self.refund])
+    def log_changed(self,*_):
+        if self.log.edit_modified():self.log.edit_modified(False);self.schedule_state()
+    def close_app(self):
+        if self.save_state():self.destroy()
     def clear_records(self):
         if self.busy:return
         self.result=None;self.log.delete('1.0','end');self.save.config(state='disabled');self.bar.stop();self.bar['value']=0
         self.status.set('计算结果和异常记录已清空；已选文件及参数保留。')
+        self.save_state()
     def check_cloud(self):
         if not self.busy:self.task(lambda:check_update(VERSION),self.cloud_checked)
     def cloud_checked(self,manifest):
@@ -68,9 +110,12 @@ class App(TkinterDnD.Tk):
         if messagebox.askyesno('云端更新','发现版本 '+manifest['version']+'，是否下载、校验并重启安装？请先导出需要保存的报告。'):
             self.task(lambda:download_update(manifest),self.cloud_downloaded)
     def cloud_downloaded(self,path):
-        try:install_update(path);self.destroy()
+        try:
+            if not self.save_state():return
+            install_update(path);self.destroy()
         except Exception as e:messagebox.showerror('安装更新失败',str(e))
     def freight_changed(self,*_):
+        if self._restoring:return
         if self.result:
             self.result=None;self.save.config(state='disabled');self.status.set('输入参数已修改，请重新计算后导出。')
     def pick(self,v):
@@ -127,14 +172,18 @@ class App(TkinterDnD.Tk):
             if not 0<=refund<=100:raise ValueError('预计退款比例须在0到100之间')
         except ValueError as e:return messagebox.showerror('输入无效',str(e))
         month,date=self.mon.get(),self.date.get();self.result=None
+        self._calculation_inputs=self.input_signature()
         self.task(lambda:calculate(*paths,month,date,freight,currency,refund),self.calculated)
     def calculated(self,r):
+        if self.input_signature()!=self._calculation_inputs:
+            self.result=None;self.save.config(state='disabled');self.status.set('计算期间输入已修改，请重新计算。');self.schedule_state();return
         self.result=r;self.save.config(state='normal');self.log.delete('1.0','end')
         self.status.set(f"{r['month']}：选中 {r['selected_orders']} 个唯一订单/SKU，正常 {len(r['details'])} 个，估算 {r['estimated_orders']} 个，未计入 {r['failed_orders']} 个；异常提示 {len(r['exceptions'])} 条，处理提示 {len(r['warnings'])} 条。")
         for t in r['totals']:self.log.insert('end',f"{t['币种']} 正常：{t['正常计算利润']:,.2f} + 估算：{t['估算利润']:,.2f} = 利润：{t['利润']:,.2f} + 运费收入：{t['手填运费收入']:,.2f} = 最终利润：{t['最终利润']:,.2f}\n")
         for d in r['estimated']:self.log.insert('end',f"[估算10%] {d['订单号']} / {d['SKU ID']}：{d['估算原因']}；估算利润 {d['估算利润']:,.2f}\n\n")
         for i in r['exceptions']:self.log.insert('end',f"[{i['阶段']}] {i['订单号']} / {i['SKU ID']}：{i['原因']}\n\n")
         if not r['details'] and not r['estimated']:self.log.insert('end','没有可计入利润的记录，请检查异常清单。\n')
+        self.schedule_state()
     def export(self):
         if not self.result:return
         p=filedialog.asksaveasfilename(defaultextension='.xlsx',initialfile='利润报告_'+self.result['month']+'.xlsx',filetypes=[('Excel','*.xlsx')])
