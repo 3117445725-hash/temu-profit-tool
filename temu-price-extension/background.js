@@ -82,13 +82,19 @@ async function handle(msg,sender){
     if(j?.active)throw Error('请先暂停已有采集任务');
     const tab=await chrome.tabs.get(msg.tabId);if(!allowed(tab.url)||new URL(tab.url).pathname!=='/mmsos/orders.html')throw Error('请在本店铺实际订单列表页开始后台采集');
     if(!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(msg.month||''))throw Error('请选择有效月份');
-    const host=new URL(tab.url).hostname;let template;
+    const listAddress=new URL(tab.url);
+    // Parameters observed on the live platform after its own month filter was applied.
+    const [year,monthNumber]=msg.month.split('-').map(Number);
+    const start=Date.UTC(year,monthNumber-1,1)-8*60*60*1000;
+    const end=Date.UTC(year,monthNumber,1)-8*60*60*1000-1;
+    for(const [key,value] of Object.entries({queryType:0,parentOrderTime_startTs:start,parentOrderTime_startTzTs:Math.floor(start/1000),parentOrderTime_endTs:end,parentOrderTime_endTzTs:Math.floor(end/1000)}))listAddress.searchParams.set(key,String(value));
+    const host=listAddress.hostname;let template;
     for(const r of Object.values(s.records)){template=detailTemplate(r.source,host);if(template)break;}
     if(!template){const tabs=await chrome.tabs.query({});for(const t of tabs){template=detailTemplate(t.url,host);if(template)break;}}
     // This exact detail route and its order parameter were verified on the live US seller site.
     // No synthetic window.open is needed; each worker replaces the order with a real list order.
     if(!template&&host==='agentseller-us.temu.com')template='https://agentseller-us.temu.com/mmsos/order-detail.html?timezone=UTC%2B8&parent_order_sn=PO-211-0&fulfillment_mode=0';
-    const list=await chrome.tabs.create({url:tab.url,active:false});
+    const list=await chrome.tabs.create({url:listAddress.href,active:false});
     if(!template){
       const owned=new Set([list.id]);
       try{
@@ -107,10 +113,10 @@ async function handle(msg,sender){
         }
         if(!template)throw Error('后台未取得真实详情地址，请检查平台是否阻止打开详情');
         for(const id of owned)if(id!==list.id)await chrome.tabs.remove(id);
-        await chrome.tabs.update(list.id,{url:tab.url,active:false});
+        await chrome.tabs.update(list.id,{url:listAddress.href,active:false});
       }catch(error){for(const id of owned)try{await chrome.tabs.remove(id);}catch{}throw error;}
     }
-    s.job={active:true,platform:true,quiet:true,base:tab.id,listTab:list.id,listURL:tab.url,detail:null,worker:null,template,month:msg.month,pending:[],index:0,processed:[],stage:'prepare',signature:null,pageCount:0,message:'准备后台全部状态订单列表',started:Date.now()};await save(s);return {ok:true};
+    s.job={active:true,platform:true,quiet:true,base:tab.id,listTab:list.id,listURL:listAddress.href,detail:null,worker:null,template,month:msg.month,pending:[],index:0,processed:[],stage:'prepare',signature:null,pageCount:0,message:'准备后台全部状态订单列表',started:Date.now()};await save(s);return {ok:true};
   }
   if(msg.type==='START_IMPORTED'){
     const tab=await chrome.tabs.get(msg.tabId);if(!allowed(tab.url))throw Error('请在已登录的对应Temu店铺页面导入');
