@@ -109,6 +109,22 @@
           const exact=[...root.querySelectorAll('button,a,li,span,div,[role="button"]')].filter(el=>visible(el)&&el.textContent.trim()===String(targetPage));
           const leaf=exact.filter(el=>!exact.some(other=>other!==el&&el.contains(other)));
           if(leaf.length===1){const el=leaf[0].closest('button,a,li,[role="button"]')||leaf[0];if(!el.disabled&&el.getAttribute('aria-disabled')!=='true')return {el,finished:false};}
+          // Numeric pages may be collapsed near the end; use the unique icon
+          // immediately to the right of the last page number in this same footer.
+          const numbers=[...root.querySelectorAll('button,a,li,span,div')].filter(el=>visible(el)&&!el.children.length&&/^\d+$/.test(el.textContent.trim()));
+          if(numbers.length){
+            const last=numbers.sort((a,b)=>b.getBoundingClientRect().right-a.getBoundingClientRect().right)[0].getBoundingClientRect();
+            const arrows=[...root.querySelectorAll('svg')].filter(el=>{const r=el.getBoundingClientRect();return visible(el)&&r.left>=last.right-2&&r.left-last.right<100&&Math.abs((r.top+r.bottom-last.top-last.bottom)/2)<25;});
+            if(arrows.length===1){
+              let el=arrows[0].parentElement;
+              for(let n=0;el&&el!==root&&n<4;n++,el=el.parentElement){
+                if(el.matches('button,a,li,[role="button"]')||getComputedStyle(el).cursor==='pointer'){
+                  const disabled=el.disabled||el.getAttribute('aria-disabled')==='true'||/disabled/i.test(String(el.className||''));
+                  return {el:disabled?null:el,finished:!!disabled};
+                }
+              }
+            }
+          }
         }
       }
       const roots=[...document.querySelectorAll('[class*="pagination"],[class*="Pagination"],[class*="pager"],[role="navigation"]')].filter(visible);
