@@ -144,6 +144,15 @@ def calculate_auto(paths,month,date_field='订单创建时间',freight='0',curre
  notify=progress or (lambda text:None)
  notify('读取并识别文件；大成本表首次加载较慢，未修改文件会复用缓存')
  data=discover(paths);report=inspect_files(paths,data);order=next(t for t in data if '订单' in t['roles'])
+
+ original_order=order
+ settlement_mode='交易类型' in order['fields']
+ excluded_transactions={}
+ if settlement_mode:
+  from collections import Counter
+  excluded_transactions=dict(Counter(core.key(r.get('交易类型')) for r in order['records'] if core.key(r.get('交易类型'))!='销售回款'))
+  order={**order,'records':[r for r in order['records'] if core.key(r.get('交易类型'))=='销售回款']}
+  if not order['records']:raise ValueError('该结算来源没有销售回款记录，不能作为商品订单计算')
  notify('文件读取完成，正在建立订单和相关SKU的成本索引')
  products=set();product_sources=[];settlements={'未结算':[],'已结算':[]};pairs=set();cost_rows=[];cost_groups={};source_map=[]
  selected_ids={core.key(r.get('SKU ID')) for r in order['records'] if core.key(r.get('SKU ID'))}
@@ -185,7 +194,7 @@ def calculate_auto(paths,month,date_field='订单创建时间',freight='0',curre
       except ValueError:equal=core.key(group['values'][name])==core.key(value)
       if not equal:group['conflicts']=True
      else:group['values'][name]=value
-  if '价格/结算' in t['roles'] and t is not order:
+  if '价格/结算' in t['roles'] and (t is not original_order or settlement_mode):
    label='已结算' if ('Settled' in Path(t['path']).name or '已结算' in t['sheet'] or '已结算' in Path(t['path']).name) and '未结算' not in t['sheet'] else '未结算'
    for r in t['records']:
     if '交易类型' in r and core.key(r['交易类型'])!='销售回款':continue
@@ -217,6 +226,9 @@ def calculate_auto(paths,month,date_field='订单创建时间',freight='0',curre
   write_book(cp,[['成本表'],[],[]]+cost_rows,'TEMU-半托管 定价表')
   notify('正在核对件数并计算利润')
   result=core.calculate(op,pp,up,sp,cp,month,date_field,freight,currency,refund)
+ if settlement_mode:
+  result['calculation_basis']='结算到账月份的销售回款'
+  result['warnings'].append({'阶段':'结算月份口径','订单号':'','SKU ID':'','原因':'当前以结算表的 '+date_field+' 筛选销售回款，不代表订单创建月份利润；不纳入商品计算的交易行：'+str(excluded_transactions)+'。销售冲回未另行扣减，退款仍按填写比例计算；运费仅按手填收入加一次。'})
  result['import_report']=[{'文件':x['path'],'工作表':x['sheet'],'表头末行':x['header_row'],'字段':'、'.join(x['fields']),'角色':'、'.join(x['roles'])} for x in report['tables']]
  result['warnings'].extend({'阶段':'成本来源','订单号':'','SKU ID':'','原因':'同一工作簿完整成本表优先；辅助表 '+sheet+' 的 '+name+' 不覆盖主表；文件 '+path} for path,sheet,name in sorted(ignored_auxiliary))
  result['source_map']=source_map
