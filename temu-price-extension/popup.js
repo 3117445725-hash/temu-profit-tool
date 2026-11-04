@@ -34,7 +34,7 @@ $('importStart').onclick=async()=>{
     await ask('START_IMPORTED',{month:$('month').value,orders:imported.orders,expectedSkus:imported.expectedSkus});await refresh();
   }catch(e){$('status').textContent=e.message;}
 };
-for(const [id,type] of Object.entries({capture:'CAPTURE',pause:'PAUSE',resume:'RESUME',export:'EXPORT',full:'EXPORT',clear:'CLEAR',start:'START'})){
+for(const [id,type] of Object.entries({retryFailed:'RETRY_FAILED',reviewExport:'EXPORT_REVIEW',capture:'CAPTURE',pause:'PAUSE',resume:'RESUME',export:'EXPORT',full:'EXPORT',clear:'CLEAR',start:'START'})){
   $(id).onclick=async()=>{
     try{
       if(id==='clear'&&!confirm('只清除本扩展的本地采集记录，是否继续？'))return;
