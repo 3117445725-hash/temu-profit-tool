@@ -1,7 +1,7 @@
 'use strict';
 let serial=Promise.resolve();
 const allowed=url=>{try{const u=new URL(url);return u.protocol==='https:'&&['agentseller-us.temu.com','agentseller.temu.com'].includes(u.hostname);}catch{return false;}};
-const load=()=>chrome.storage.local.get({records:{},job:null,errors:[]});
+const load=()=>chrome.storage.local.get({records:{},job:null,errors:[],review:{}});
 const save=s=>chrome.storage.local.set(s);
 async function send(tabId,msg){
   try{return await chrome.tabs.sendMessage(tabId,msg);}
@@ -80,10 +80,30 @@ async function drive(s){
 async function handle(msg,sender){
   const s=await load(),j=s.job,tabId=sender.tab?.id;
   if(msg.type==='PAGE_STATUS')return {active:!!j?.active,accept:!!j&&(j.platform?[j.listTab,j.detail]:[j.base,j.detail]).includes(tabId),stage:j?.stage,order:j?.order};
-  if(msg.type==='STATUS')return {job:j,count:Object.keys(s.records).length,errors:s.errors.slice(-8)};
+  if(msg.type==='STATUS')return {job:j,count:Object.keys(s.records).length,reviewCount:Object.keys(s.review||{}).length,errors:s.errors.filter(e=>!e.resolved).slice(-8)};
   if(msg.type==='EXTENSION_UPDATE')return TemuExtensionUpdate(msg.operation);
   if(msg.type==='BRIDGE_STATUS')return typeof TemuBridgeStatus==='function'?TemuBridgeStatus():{configured:false,connected:false};
   if(msg.type==='BRIDGE_TOGGLE'){await chrome.storage.local.set({bridgeEnabled:!!msg.enabled});return {ok:true};}
+  if(msg.type==='RETRY_FAILED'){
+    if(j?.active)throw Error('请先暂停当前任务');
+    const month=msg.month||j?.month;if(!/^\d{4}-\d{2}$/.test(month||''))throw Error('请选择月份');
+    const tab=await chrome.tabs.get(msg.tabId);if(!allowed(tab.url))throw Error('请打开对应Temu店铺页面');
+    const orders=[...new Set([...Object.keys(s.review||{}).filter(o=>s.review[o].month===month),...s.errors.filter(e=>!e.resolved&&/^PO-\d+-\d+$/.test(e.order||'')&&/未计入|未取得|月份|冲突|数量存在歧义/.test(e.reason||'')).map(e=>e.order)])];
+    if(!orders.length)throw Error('没有待重试的异常订单');
+    const host=new URL(tab.url).hostname;
+    const template=detailTemplate(j?.template,host)||Object.values(s.records).map(r=>detailTemplate(r.source,host)).find(Boolean)||(host==='agentseller-us.temu.com'?'https://agentseller-us.temu.com/mmsos/order-detail.html?timezone=UTC%2B8&parent_order_sn=PO-211-0&fulfillment_mode=0':null);
+    if(!template)throw Error('缺少已验证详情地址');
+    s.job={active:true,platform:true,quiet:true,retry:true,snapshotComplete:true,expectedTotal:orders.length,base:tab.id,listTab:null,template,month,pending:orders,index:0,processed:[],stage:'list',message:'单独重试异常订单，成功记录保留',started:Date.now()};await save(s);await drive(s);return {ok:true,count:orders.length};
+  }
+  if(msg.type==='EXPORT_REVIEW'){
+    const rows=Object.entries(s.review||{}).map(([order,r])=>[order,r.month,r.created,r.reason,JSON.stringify(r.records||[]),JSON.stringify(r.dateEvidence||[]),r.url]);
+    // Legacy failures had no payload retained; expose them rather than hide them.
+    for(const e of s.errors)if(!e.resolved&&e.order&&!s.review?.[e.order])rows.push([e.order,j?.month||'','',e.reason,'旧版未保存候选数据，需点击重试异常订单','','']);
+    if(!rows.length)throw Error('暂无待复核记录');
+    const quote=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+    const data='\uFEFF'+[['订单号','目标月份','读取到的创建时间','原因','候选SKU数据','日期原文','详情地址'],...rows].map(row=>row.map(quote).join(',')).join('\r\n');
+    await chrome.downloads.download({url:'data:text/csv;charset=utf-8,'+encodeURIComponent(data),filename:'Temu异常待复核.csv',saveAs:true});return {ok:true};
+  }
   if(msg.type==='START_PLATFORM'){
     if(j?.active)throw Error('请先暂停已有采集任务');
     const tab=await chrome.tabs.get(msg.tabId);if(!allowed(tab.url)||new URL(tab.url).pathname!=='/mmsos/orders.html')throw Error('请在本店铺实际订单列表页开始后台采集');
@@ -231,15 +251,23 @@ async function handle(msg,sender){
       const cancelled=/^(?:已取消|cancelled|canceled)$/i.test(String(msg.result.status||'').trim());
       const result={...msg.result,records:(msg.result.records||[]).filter(r=>r.order===j.order&&(j.platform||allowedIds.includes(r.sku)))};
       if(j.platform&&!result.created)result.created=result.records[0]?.orderCreated||'';
-      if(cancelled){j.excludedCancelled=(j.excludedCancelled||0)+1;}else{
+      if(cancelled){j.excludedCancelled=(j.excludedCancelled||0)+1;if(s.review)delete s.review[j.order];for(const e of s.errors)if(e.order===j.order)e.resolved=true;}else{
         const actualMonth=createdMonth(result.created||result.records[0]?.orderCreated);
         if(j.platform&&(!actualMonth||actualMonth!==j.month)){
-          addError(s,j.order,!actualMonth?'详情缺少可靠创建时间，未计入所选月份':'详情创建月份不符，跳过');result.records=[];
+          addError(s,j.order,!actualMonth?'详情缺少可靠创建时间，未计入所选月份':'详情创建月份不符：实际读取 '+result.created+'，目标 '+j.month+'；候选数据已保存待复核');result.records=[];
         }
         for(const sku of allowedIds)if(!result.records.some(r=>r.sku===sku))addError(s,j.order,'导入SKU '+sku+' 未在详情中读取到明确申报价格');
+        for(const r of result.records){const old=s.records[r.order+'|'+r.sku];if(old&&(old.price!==r.price||old.currency!==r.currency)){result.errors=result.errors||[];result.errors.push('SKU '+r.sku+' 与已保存价格不同，保留旧值待复核');}}
         if((result.errors||[]).length)j.warningOrders=(j.warningOrders||0)+1;
         if(result.records.length)j.successfulOrders=(j.successfulOrders||0)+1;
         else{j.failedOrders=(j.failedOrders||0)+1;addError(s,j.order,'详情未取得可保存的本月价格：'+(result.errors||[]).join('；'));}
+        const relevantWarnings=(result.errors||[]).length>0;
+        if(!result.records.length||relevantWarnings){
+          s.review=s.review||{};s.review[j.order]={month:j.month,created:msg.result.created||'',url:msg.result.url,dateEvidence:msg.result.dateEvidence||[],records:msg.result.records||[],reason:result.records.length?(result.errors||[]).join('；'):(s.errors.filter(e=>e.order===j.order).slice(-1)[0]?.reason||'没有可保存的价格'),captured:new Date().toISOString()};
+        }else{
+          if(s.review)delete s.review[j.order];
+          for(const e of s.errors)if(e.order===j.order)e.resolved=true;
+        }
         remember(s,result,j.month);
       }
       j.processed.push(j.order);j.index++;j.stage='list';const worker=j.worker;j.worker=null;j.detail=null;await save(s);
@@ -261,7 +289,7 @@ async function handle(msg,sender){
     const data='\uFEFF'+[headers,...rows].map(row=>row.map(quote).join(',')).join('\r\n');
     await chrome.downloads.download({url:'data:text/csv;charset=utf-8,'+encodeURIComponent(data),filename:msg.full?'Temu采集订单明细.csv':'Temu订单申报价格.csv',saveAs:true});return {ok:true};
   }
-  if(msg.type==='CLEAR'){if(j?.active)throw Error('请先暂停采集');await save({records:{},job:null,errors:[]});return {ok:true};}
+  if(msg.type==='CLEAR'){if(j?.active)throw Error('请先暂停采集');await save({records:{},job:null,errors:[],review:{}});return {ok:true};}
   return {ok:true};
 }
 chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
