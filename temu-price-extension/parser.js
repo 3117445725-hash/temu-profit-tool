@@ -39,9 +39,21 @@
    const old=children.get(entry.child);
    if(old?.cancelled)continue;
    if(entry.cancelled){children.set(entry.child,entry);continue;}
-   if(old&&JSON.stringify(old.records)!==JSON.stringify(entry.records)){
-    errors.push('子订单 '+entry.child+' 重复展示的数据不一致，未计入');children.set(entry.child,{cancelled:false,records:[],conflict:true});
-   }else if(!old)children.set(entry.child,entry);
+   if(old?.conflict)continue;
+   if(!old){children.set(entry.child,entry);continue;}
+   const merged=new Map(old.records.map(r=>[r.sku,{...r}]));let conflict=false;
+   for(const record of entry.records){
+    const previous=merged.get(record.sku);
+    if(!previous){merged.set(record.sku,{...record});continue;}
+    const different=previous.price!==record.price||previous.currency!==record.currency||
+     (previous.ref&&record.ref&&previous.ref!==record.ref)||
+     (previous.quantity!==null&&record.quantity!==null&&previous.quantity!==record.quantity);
+    if(different){conflict=true;break;}
+    if(previous.quantity===null&&record.quantity!==null)previous.quantity=record.quantity;
+    if(!previous.ref&&record.ref)previous.ref=record.ref;
+   }
+   if(conflict){errors.push('子订单 '+entry.child+' 重复展示的明确价格或件数冲突，未计入');children.set(entry.child,{cancelled:false,records:[],conflict:true});}
+   else children.set(entry.child,{...old,records:[...merged.values()]});
   }
   const grouped=new Map(),blocked=new Set();
   for(const entry of children.values()){
@@ -56,7 +68,9 @@
     old.quantity=old.quantity===null||r.quantity===null?null:old.quantity+r.quantity;
    }
   }
-  return {order,records:[...grouped.values()],errors};
+  const records=[...grouped.values()];
+  errors=errors.filter(e=>!records.some(r=>r.quantity!==null&&e==='SKU '+r.sku+' 缺少明确件数，保留价格待核对'));
+  return {order,records,errors};
  }
  function parseText(input){
   const text=String(input||''),base=parseSingle(text);
