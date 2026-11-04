@@ -7,12 +7,12 @@ from core import scan_orders, calculate, export_xlsx, number
 from auto_import import scan_auto,calculate_auto
 from updater import check_update,download_update,install_update
 import state_store
-VERSION='6.3.4'
+VERSION='6.3.5'
 
 class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title('月度利润计算工具 v6.3.4（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
+        self.title('月度利润计算工具 v6.3.5（稳定目录版）'); self.geometry('1000x820'); self.minsize(850,760)
         self._restoring=True;self._state_timer=None
         self.events=queue.Queue(); self.result=None; self.months={}; self.busy=False; self.scanned_path=None
         box=ttk.Frame(self,padding=22); box.pack(fill='both',expand=True)
@@ -209,6 +209,7 @@ class App(TkinterDnD.Tk):
             self.result=None;self.save.config(state='disabled');self.status.set('计算期间输入已修改，请重新计算。');self.schedule_state();return
         self.result=r;self.save.config(state='normal');self.log.delete('1.0','end')
         self.status.set(f"{r['month']}：选中 {r['selected_orders']} 个唯一订单/SKU，正常 {len(r['details'])} 个，估算 {r['estimated_orders']} 个，未计入 {r['failed_orders']} 个；异常提示 {len(r['exceptions'])} 条，处理提示 {len(r['warnings'])} 条。")
+        if r.get('calculation_basis'):self.log.insert('end','[计算口径] '+r['calculation_basis']+'\n')
         from collections import Counter
         comparisons=Counter(x['对比结果'] for x in r.get('quantity_checks',[]))
         self.log.insert('end','件数对比：'+str(dict(comparisons))+'\n')
