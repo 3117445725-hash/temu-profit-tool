@@ -46,7 +46,7 @@
     const previous=merged.get(record.sku);
     if(!previous){merged.set(record.sku,{...record});continue;}
     const different=previous.price!==record.price||previous.currency!==record.currency||
-     (previous.ref&&record.ref&&previous.ref!==record.ref)||
+     (previous.ref&&record.ref&&previous.ref.slice(0,6)!==record.ref.slice(0,6))||
      (previous.quantity!==null&&record.quantity!==null&&previous.quantity!==record.quantity);
     if(different){conflict=true;break;}
     if(previous.quantity===null&&record.quantity!==null)previous.quantity=record.quantity;
@@ -110,7 +110,12 @@
    const child=text.match(/子订单号\s*[:：]?\s*([\d-]+)/)?.[1];
    const stamps=typeof card.querySelectorAll==='function'?[...card.querySelectorAll('[alt],[title],[aria-label]')].map(el=>[el.getAttribute('alt'),el.getAttribute('title'),el.getAttribute('aria-label')].join(' ')).join(' '):'';
    const cancelled=/已取消|\bcancel(?:led|ed)\b/i.test(text+' '+stamps);
-   const parsed=cancelled?{records:[],errors:[]}:parseSingle(result.order+'\n'+text.slice(id.index)+'\n'+text.slice(0,id.index));
+   // Product quantity is rendered in the title before SKU ID. Once present,
+   // do not mix it with quantities from logistics/history elsewhere in the card.
+   const titleQuantities=unique([...text.slice(0,id.index).matchAll(/[×xX]\s*(\d+)\b/g)].map(m=>Number(m[1])).filter(n=>Number.isSafeInteger(n)&&n>0));
+   let arranged=text.slice(id.index)+'\n'+text.slice(0,id.index);
+   if(titleQuantities.length===1)arranged=arranged.replace(/(?:[×xX]\s*\d+\b|(?:件数|数量)\s*[:：]?\s*\d+\b)/g,'')+'\n数量：'+titleQuantities[0];
+   const parsed=cancelled?{records:[],errors:[]}:parseSingle(result.order+'\n'+arranged);
    candidates.push({child:child||'sku:'+id[1],cancelled,records:parsed.records,errors:parsed.errors,hasChild:!!child});
   }
   if(candidates.length){
