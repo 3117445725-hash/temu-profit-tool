@@ -78,7 +78,7 @@
     const parsed=PriceParser.parseDocument(document);
     const created=text().match(/订单创建时间\s*[:：]?\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)/);
     const status=text().match(/(?:^|\n)\s*状态\s*[:：]\s*([^\n]+)/);
-    return {...parsed,status:status?status[1].trim():'',created:created?created[1].replaceAll('/','-'):'',url:location.href};
+    return {...parsed,status:status?status[1].trim():'',created:created?created[1].replaceAll('/','-'):'',dateEvidence:(text().match(/订单创建时间[^\n]{0,100}/g)||[]).slice(0,5),url:location.href};
   }
   function paginationDiagnostic(){
     const controls=[...document.querySelectorAll('button,a,li,span,div,input,select,[role]')].filter(el=>{
